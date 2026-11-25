@@ -9,6 +9,7 @@ export * from './loader.js';
 export * from './security.js';
 export * from './tiktok-plugin.js';
 export * from './facebook-plugin.js';
+export * from './instagram-plugin.js';
 export * from './dashboard-theme.js';
 export { activeDevices, loadRegisteredDevices, saveRegisteredDevices } from './devices/registry.js';
 export {
