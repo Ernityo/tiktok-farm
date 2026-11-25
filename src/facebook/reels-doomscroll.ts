@@ -15,7 +15,7 @@ import {
     isPersonality,
     pickWatchDurationMs,
 } from '../tiktok/doomscroll-profile.js';
-import { detectReelsControls, type ReelsControls } from './reels-controls.js';
+import { detectReelsControls, detectTranslatedCaption, type ReelsControls } from './reels-controls.js';
 
 function positiveInteger(name: string, fallback: number): number {
     const rawValue = process.env[name] ?? String(fallback);
@@ -103,6 +103,9 @@ function cancellableDelay(ms: number): Promise<void> {
 }
 
 const interactionPauseMs = () => Math.round(200 + Math.random() * 400);
+// How long a Reel is looked at before deciding it isn't French: long enough
+// for the caption to render and to look like a person reading it.
+const glanceMs = () => Math.round(700 + Math.random() * 800);
 
 let driver: Browser | undefined;
 let reelsViewed = 0;
@@ -110,6 +113,7 @@ let swipes = 0;
 let likes = 0;
 let alreadyLiked = 0;
 let reelsWithoutRail = 0;
+let translatedSkipped = 0;
 const runStartedAt = Date.now();
 
 console.log(`Starting Facebook Reels doomscroll: profile=${personality} requestedDurationMinutes=${durationMinutes} likeEnabled=${likeEnabled}`);
@@ -162,6 +166,22 @@ try {
         }
     };
 
+    // "Afficher l'original" under the caption: Facebook translated it into
+    // French, so the Reel isn't French content. Detection errors count as
+    // French (keep watching) rather than skipping blindly.
+    const isTranslated = async (): Promise<boolean> => {
+        try {
+            const screenshot = await remoteControl.getScreenshot(udid);
+            await debugShot('caption', screenshot);
+            const { translated, score } = await detectTranslatedCaption(screenshot, scale);
+            if (translated) console.log(`Caption shows "Afficher l'original" (score ${score.toFixed(2)}): translated, not French`);
+            return translated;
+        } catch (error) {
+            console.log(`Caption check failed: ${error instanceof Error ? error.message : String(error)}`);
+            return false;
+        }
+    };
+
     const swipeToNext = async (): Promise<void> => {
         const { x, startY, endY, durationMs } = facebook.swipe;
         const swipe = await swipeCoordinates(driver!, { x, y: startY }, { x, y: endY }, durationMs);
@@ -189,7 +209,21 @@ try {
     const timeLeft = () => !stopRequested && hasTimeRemaining(Date.now(), deadline);
 
     while (timeLeft()) {
-        await cancellableDelay(clampToDeadline(Date.now(), deadline, pickWatchDurationMs(profile)));
+        const reelStartedAt = Date.now();
+        const watchMs = pickWatchDurationMs(profile);
+        // Only French Reels get watched: glance at the caption and move on
+        // quickly when Facebook translated it.
+        await cancellableDelay(clampToDeadline(Date.now(), deadline, Math.min(glanceMs(), watchMs)));
+        if (!timeLeft()) break;
+        if (await isTranslated()) {
+            translatedSkipped += 1;
+            await cancellableDelay(clampToDeadline(Date.now(), deadline, interactionPauseMs()));
+            if (!timeLeft()) break;
+            await swipeToNext();
+            await debugShot('after-skip', undefined, 1000);
+            continue;
+        }
+        await cancellableDelay(clampToDeadline(Date.now(), deadline, watchMs - (Date.now() - reelStartedAt)));
         reelsViewed += 1;
         if (!timeLeft()) break;
 
@@ -233,7 +267,7 @@ try {
     }
 
     const reason = stopRequested ? 'stopped' : 'completed';
-    console.log(`Finished Facebook Reels doomscroll: reelsViewed=${reelsViewed} swipes=${swipes} likes=${likes} alreadyLiked=${alreadyLiked} elapsedMs=${Date.now() - runStartedAt} reason=${reason}`);
+    console.log(`Finished Facebook Reels doomscroll: reelsViewed=${reelsViewed} swipes=${swipes} likes=${likes} alreadyLiked=${alreadyLiked} translatedSkipped=${translatedSkipped} elapsedMs=${Date.now() - runStartedAt} reason=${reason}`);
 } finally {
     if (driver) await driver.deleteSession();
 }

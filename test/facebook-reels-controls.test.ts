@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-import { detectReelsControls } from '../src/facebook/reels-controls.js';
+import { detectReelsControls, detectTranslatedCaption } from '../src/facebook/reels-controls.js';
 
 // Real iPhone XR screenshots (scale 2) of Facebook Reels, French UI.
 const fixture = (name: string) => readFile(new URL(`./fixtures/facebook-reels/${name}.png`, import.meta.url));
@@ -47,3 +47,19 @@ test('a suggestion card has no rail, so nothing is detected', async () => {
 test('a white background behind the rail is skipped rather than guessed', async () => {
     assert.equal(await detectReelsControls(await fixture('reel-white-behind-rail'), SCALE), undefined);
 });
+
+for (const [name, translated] of [
+    ['reel-dark', true],
+    ['reel-interest-popup', true],
+    ['reel-light-background', false],
+    ['reel-fake-app-ui', false],
+    ['reel-count-two-lines', false],
+    ['reel-liked', false],
+    ['reel-white-behind-rail', false],
+    ['suggestion-card', false],
+] as const) {
+    test(`${translated ? 'spots' : 'no'} "Afficher l'original" under the caption: ${name}`, async () => {
+        const result = await detectTranslatedCaption(await fixture(name), SCALE);
+        assert.equal(result.translated, translated, `score ${result.score.toFixed(2)}`);
+    });
+}

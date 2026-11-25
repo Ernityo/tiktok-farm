@@ -19,8 +19,8 @@ interface Gray {
     height: number;
 }
 
-// Reference icons were cropped from an iPhone XR screenshot (scale 2) as
-// 72×72 px (36×36 pt) greyscale images. They are matched on edge strength,
+// Reference images were cropped from an iPhone XR screenshot (scale 2) as
+// greyscale images (icons are 72×72 px, i.e. 36×36 pt). They are matched on edge strength,
 // not brightness: Facebook draws the white icons with a thin dark outline,
 // so their edges stay visible over white video where brightness alone fails.
 const TEMPLATE_SCALE = 2;
@@ -67,25 +67,29 @@ function edges({ data, width, height }: Gray): Gray {
     return { data: out, width, height };
 }
 
-interface Template { values: Float64Array; size: number }
+interface Template { values: Float64Array; width: number; height: number }
+
+type TemplateName = 'like' | 'comment' | 'share' | 'show-original';
 
 const templateCache = new Map<string, Promise<Template>>();
 
-function loadTemplate(name: 'like' | 'comment' | 'share', scale: number): Promise<Template> {
+function loadTemplate(name: TemplateName, scale: number): Promise<Template> {
     const key = `${name}@${scale}`;
     let cached = templateCache.get(key);
     if (!cached) {
         cached = (async () => {
             const file = fileURLToPath(new URL(`${name}.png`, TEMPLATE_DIR));
-            const size = Math.round(72 * scale / TEMPLATE_SCALE);
-            const { data, info } = await sharp(file).resize(size, size).greyscale().raw()
+            const meta = await sharp(file).metadata();
+            const width = Math.round(meta.width! * scale / TEMPLATE_SCALE);
+            const height = Math.round(meta.height! * scale / TEMPLATE_SCALE);
+            const { data, info } = await sharp(file).resize(width, height).greyscale().raw()
                 .toBuffer({ resolveWithObject: true });
             const edge = edges(toGray(data, info.width, info.height, info.channels));
             // Ignore the 1 px border, where edges() leaves zeros.
             const values = edge.data;
             const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
             for (let index = 0; index < values.length; index++) values[index] = values[index]! - mean;
-            return { values, size };
+            return { values, width: info.width, height: info.height };
         })();
         templateCache.set(key, cached);
     }
@@ -93,24 +97,24 @@ function loadTemplate(name: 'like' | 'comment' | 'share', scale: number): Promis
 }
 
 function correlation(image: Gray, template: Template, cx: number, cy: number): number {
-    const { size, values } = template;
-    const left = cx - Math.floor(size / 2);
-    const top = cy - Math.floor(size / 2);
-    if (left < 0 || top < 0 || left + size > image.width || top + size > image.height) return -1;
+    const { width, height, values } = template;
+    const left = cx - Math.floor(width / 2);
+    const top = cy - Math.floor(height / 2);
+    if (left < 0 || top < 0 || left + width > image.width || top + height > image.height) return -1;
     let sum = 0;
-    for (let y = 0; y < size; y++) {
+    for (let y = 0; y < height; y++) {
         const row = (top + y) * image.width + left;
-        for (let x = 0; x < size; x++) sum += image.data[row + x]!;
+        for (let x = 0; x < width; x++) sum += image.data[row + x]!;
     }
     const mean = sum / values.length;
     let covariance = 0;
     let patchEnergy = 0;
     let templateEnergy = 0;
-    for (let y = 0; y < size; y++) {
+    for (let y = 0; y < height; y++) {
         const row = (top + y) * image.width + left;
-        for (let x = 0; x < size; x++) {
+        for (let x = 0; x < width; x++) {
             const p = image.data[row + x]! - mean;
-            const t = values[y * size + x]!;
+            const t = values[y * width + x]!;
             covariance += p * t;
             patchEnergy += p * p;
             templateEnergy += t * t;
@@ -212,4 +216,29 @@ export async function detectReelsControls(screenshot: Buffer, scale: number): Pr
         liked: false,
         confidence: Math.min(railScore, like.score),
     };
+}
+
+/** "Afficher l'original" must match at least this well. */
+export const MIN_SHOW_ORIGINAL_SCORE = 0.5;
+
+// "Afficher l'original" is left-aligned with the caption: its centre sits
+// ~66 pt from the left edge on the XR (text starts at the 12.5 pt margin).
+const SHOW_ORIGINAL_CENTRE_X_PT = 66.5;
+
+/**
+ * True when the Reel's caption carries "Afficher l'original" (Show
+ * original): Facebook machine-translated it into French, so the Reel is
+ * foreign-language content. Edge-matched like the rail icons, so the grey
+ * label still registers over light video.
+ */
+export async function detectTranslatedCaption(screenshot: Buffer, scale: number): Promise<{ translated: boolean; score: number }> {
+    const { data, info } = await sharp(screenshot).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const { width, height, channels } = info;
+    const image = edges(toGray(data, width, height, channels));
+    const template = await loadTemplate('show-original', scale);
+    const cx = Math.round(SHOW_ORIGINAL_CENTRE_X_PT * scale);
+    const slack = Math.round(6 * scale);
+    // Caption block: below the middle of the video, above the tab bar.
+    const match = bestMatch(image, template, cx - slack, cx + slack, Math.floor(height * 0.5), Math.ceil(height * 0.92));
+    return { translated: match.score >= MIN_SHOW_ORIGINAL_SCORE, score: match.score };
 }
