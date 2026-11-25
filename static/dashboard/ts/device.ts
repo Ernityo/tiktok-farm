@@ -41,11 +41,11 @@ interface PostRun {
 interface DeviceSchedule {
     id: string;
     status: 'active' | 'paused' | 'completed' | 'cancelled';
-    taskType: 'doomscroll' | 'post';
+    taskType: 'doomscroll' | 'post' | 'reels-doomscroll';
     timing: { kind: string; localTime?: string; timezone?: string; weekdays?: number[]; runAt?: string };
     nextRunAt: string | null;
     payload: {
-        type: 'doomscroll' | 'post';
+        type: 'doomscroll' | 'post' | 'reels-doomscroll';
         destination?: 'draft' | 'publish';
         account?: string;
         durationMinutes?: number;
@@ -55,7 +55,7 @@ interface DeviceSchedule {
 
 interface DeviceExecution {
     id: string;
-    taskType: 'doomscroll' | 'post';
+    taskType: 'doomscroll' | 'post' | 'reels-doomscroll';
     status: string;
     scheduledFor: string;
     startedAt: string | null;
@@ -225,6 +225,55 @@ elements.doomscrollDurationButtons.forEach((button) => {
     });
 });
 
+// Facebook Reels dialog. Same scheduling fields as the TikTok doomscroll
+// dialog, with ids prefixed "fbreels-".
+const fbreels = {
+    dialog: element<HTMLDialogElement>('#fbreels-dialog'),
+    form: element<HTMLFormElement>('#fbreels-form'),
+    duration: element<HTMLInputElement>('#fbreels-duration'),
+    recurring: element<HTMLInputElement>('#fbreels-recurring'),
+    startOptions: element<HTMLElement>('#fbreels-start-options'),
+    startKind: element<HTMLSelectElement>('#fbreels-start-kind'),
+    onceFields: element<HTMLElement>('#fbreels-once-fields'),
+    recurringFields: element<HTMLElement>('#fbreels-recurring-fields'),
+    frequency: element<HTMLSelectElement>('#fbreels-frequency'),
+    weekdayFields: element<HTMLElement>('#fbreels-weekday-fields'),
+    weekdayInputs: Array.from(document.querySelectorAll<HTMLInputElement>('#fbreels-weekday-fields input[type="checkbox"]')),
+    runWindowField: element<HTMLElement>('#fbreels-run-window-field'),
+    scheduleKind: element<HTMLInputElement>('#fbreels-schedule-kind'),
+    weekdays: element<HTMLInputElement>('#fbreels-weekdays'),
+    runAt: element<HTMLInputElement>('#fbreels-run-at'),
+    runAtIso: element<HTMLInputElement>('#fbreels-run-at-iso'),
+};
+
+function updateFbreelsSchedule(): void {
+    const recurring = fbreels.recurring.checked;
+    const kind = recurring ? fbreels.frequency.value : fbreels.startKind.value;
+    fbreels.scheduleKind.value = kind;
+    fbreels.weekdays.value = selectedWeekdays(fbreels.weekdayInputs).join(',');
+    fbreels.startOptions.hidden = recurring;
+    fbreels.onceFields.hidden = recurring || kind !== 'once';
+    fbreels.recurringFields.hidden = !recurring;
+    fbreels.weekdayFields.hidden = !recurring || kind !== 'weekly';
+    fbreels.runWindowField.hidden = kind === 'now';
+    fbreels.runAt.required = kind === 'once';
+}
+
+fbreels.recurring.addEventListener('change', updateFbreelsSchedule);
+fbreels.startKind.addEventListener('change', updateFbreelsSchedule);
+fbreels.frequency.addEventListener('change', updateFbreelsSchedule);
+fbreels.weekdayInputs.forEach((input) => input.addEventListener('change', updateFbreelsSchedule));
+fbreels.form.addEventListener('submit', () => {
+    updateFbreelsSchedule();
+    fbreels.runAtIso.value = fbreels.runAt.value ? new Date(fbreels.runAt.value).toISOString() : '';
+});
+element<HTMLButtonElement>('#open-fbreels').addEventListener('click', () => fbreels.dialog.showModal());
+element<HTMLButtonElement>('#close-fbreels').addEventListener('click', () => fbreels.dialog.close());
+element<HTMLButtonElement>('#cancel-fbreels').addEventListener('click', () => fbreels.dialog.close());
+document.querySelectorAll<HTMLButtonElement>('[data-fbreels-duration]').forEach((button) => {
+    button.addEventListener('click', () => { fbreels.duration.value = button.dataset.fbreelsDuration ?? ''; });
+});
+
 function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
@@ -305,6 +354,9 @@ document.addEventListener('htmx:afterRequest', (event) => {
     const detail = (event as CustomEvent<{ elt?: Element; successful?: boolean }>).detail;
     if (detail?.elt === elements.doomscrollForm && detail.successful) {
         elements.doomscrollDialog.close();
+    }
+    if (detail?.elt === fbreels.form && detail.successful) {
+        fbreels.dialog.close();
     }
 });
 
@@ -610,6 +662,9 @@ function taskActionButton(label: string, action: () => Promise<void>): HTMLButto
 }
 
 function taskTitle(taskType: DeviceSchedule['taskType'], payload?: DeviceSchedule['payload']): string {
+    if (taskType === 'reels-doomscroll') {
+        return `Facebook Reels${payload?.durationMinutes ? ` · ${payload.durationMinutes} min` : ''}`;
+    }
     if (taskType === 'doomscroll') {
         const details = payload?.durationMinutes ? ` · ${payload.durationMinutes} min` : '';
         return `Doomscroll${details}`;
@@ -678,7 +733,8 @@ function renderDeviceExecutions(executions: DeviceExecution[]): void {
         row.className = 'task-row';
         const copy = document.createElement('div');
         const title = document.createElement('h3');
-        title.textContent = execution.taskType === 'post' ? 'Post' : 'Doomscroll';
+        title.textContent = execution.taskType === 'post' ? 'Post'
+            : execution.taskType === 'reels-doomscroll' ? 'Facebook Reels' : 'Doomscroll';
         const meta = document.createElement('p');
         meta.textContent = `${formatDate(execution.scheduledFor)}${execution.error ? ` · ${execution.error}` : ''}`;
         copy.append(title, meta);
@@ -687,7 +743,7 @@ function renderDeviceExecutions(executions: DeviceExecution[]): void {
         state.textContent = execution.status;
         const actions = document.createElement('div');
         actions.className = 'inline-actions';
-        if (execution.status === 'queued' || (execution.status === 'running' && execution.taskType === 'doomscroll')) {
+        if (execution.status === 'queued' || (execution.status === 'running' && execution.taskType !== 'post')) {
             actions.append(taskActionButton(execution.status === 'queued' ? 'Cancel' : 'Stop', async () => {
                 await jsonRequest(`/api/executions/${execution.id}/stop`, { method: 'POST' });
             }));

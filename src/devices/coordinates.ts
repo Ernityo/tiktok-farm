@@ -53,6 +53,17 @@ export interface DeviceCoordinates {
             durationMs: number;
         };
     };
+    /**
+     * Facebook app layout. Optional: only profiles measured on a real device
+     * have it, and the Facebook tasks refuse to run without it. J'aime itself
+     * is located on screen per Reel (see src/facebook/reels-controls.ts).
+     */
+    facebook?: {
+        /** Reels icon in the floating bottom tab bar (second from the left). */
+        reelsTab: Point;
+        /** Upward swipe to the next Reel; starts above the caption and pop-ups. */
+        swipe: { x: number; startY: number; endY: number; durationMs: number };
+    };
 }
 
 export const DEFAULT_COORDINATE_PROFILE = 'iphone8';
@@ -135,6 +146,11 @@ export const DEVICE_COORDINATES = {
             like: { x: 383, y: 471 },
             save: { x: 383, y: 603 },
             swipe: { x: 207, startY: 740, adStartY: 560, endY: 200, durationMs: 450 },
+        },
+        // Measured on an iPhone XR, Facebook iOS app in French (2026-11).
+        facebook: {
+            reelsTab: { x: 112, y: 848 },
+            swipe: { x: 207, startY: 620, endY: 200, durationMs: 380 },
         },
     },
 } satisfies Record<string, DeviceCoordinates>;

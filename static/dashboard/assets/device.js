@@ -154,6 +154,52 @@ elements.doomscrollDurationButtons.forEach((button) => {
         elements.doomscrollDuration.value = button.dataset.doomscrollDuration ?? '';
     });
 });
+// Facebook Reels dialog. Same scheduling fields as the TikTok doomscroll
+// dialog, with ids prefixed "fbreels-".
+const fbreels = {
+    dialog: element('#fbreels-dialog'),
+    form: element('#fbreels-form'),
+    duration: element('#fbreels-duration'),
+    recurring: element('#fbreels-recurring'),
+    startOptions: element('#fbreels-start-options'),
+    startKind: element('#fbreels-start-kind'),
+    onceFields: element('#fbreels-once-fields'),
+    recurringFields: element('#fbreels-recurring-fields'),
+    frequency: element('#fbreels-frequency'),
+    weekdayFields: element('#fbreels-weekday-fields'),
+    weekdayInputs: Array.from(document.querySelectorAll('#fbreels-weekday-fields input[type="checkbox"]')),
+    runWindowField: element('#fbreels-run-window-field'),
+    scheduleKind: element('#fbreels-schedule-kind'),
+    weekdays: element('#fbreels-weekdays'),
+    runAt: element('#fbreels-run-at'),
+    runAtIso: element('#fbreels-run-at-iso'),
+};
+function updateFbreelsSchedule() {
+    const recurring = fbreels.recurring.checked;
+    const kind = recurring ? fbreels.frequency.value : fbreels.startKind.value;
+    fbreels.scheduleKind.value = kind;
+    fbreels.weekdays.value = selectedWeekdays(fbreels.weekdayInputs).join(',');
+    fbreels.startOptions.hidden = recurring;
+    fbreels.onceFields.hidden = recurring || kind !== 'once';
+    fbreels.recurringFields.hidden = !recurring;
+    fbreels.weekdayFields.hidden = !recurring || kind !== 'weekly';
+    fbreels.runWindowField.hidden = kind === 'now';
+    fbreels.runAt.required = kind === 'once';
+}
+fbreels.recurring.addEventListener('change', updateFbreelsSchedule);
+fbreels.startKind.addEventListener('change', updateFbreelsSchedule);
+fbreels.frequency.addEventListener('change', updateFbreelsSchedule);
+fbreels.weekdayInputs.forEach((input) => input.addEventListener('change', updateFbreelsSchedule));
+fbreels.form.addEventListener('submit', () => {
+    updateFbreelsSchedule();
+    fbreels.runAtIso.value = fbreels.runAt.value ? new Date(fbreels.runAt.value).toISOString() : '';
+});
+element('#open-fbreels').addEventListener('click', () => fbreels.dialog.showModal());
+element('#close-fbreels').addEventListener('click', () => fbreels.dialog.close());
+element('#cancel-fbreels').addEventListener('click', () => fbreels.dialog.close());
+document.querySelectorAll('[data-fbreels-duration]').forEach((button) => {
+    button.addEventListener('click', () => { fbreels.duration.value = button.dataset.fbreelsDuration ?? ''; });
+});
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
@@ -234,6 +280,9 @@ document.addEventListener('htmx:afterRequest', (event) => {
     const detail = event.detail;
     if (detail?.elt === elements.doomscrollForm && detail.successful) {
         elements.doomscrollDialog.close();
+    }
+    if (detail?.elt === fbreels.form && detail.successful) {
+        fbreels.dialog.close();
     }
 });
 function pointFromEvent(event) {
@@ -535,6 +584,9 @@ function taskActionButton(label, action) {
     return buttonElement;
 }
 function taskTitle(taskType, payload) {
+    if (taskType === 'reels-doomscroll') {
+        return `Facebook Reels${payload?.durationMinutes ? ` · ${payload.durationMinutes} min` : ''}`;
+    }
     if (taskType === 'doomscroll') {
         const details = payload?.durationMinutes ? ` · ${payload.durationMinutes} min` : '';
         return `Doomscroll${details}`;
@@ -604,7 +656,8 @@ function renderDeviceExecutions(executions) {
         row.className = 'task-row';
         const copy = document.createElement('div');
         const title = document.createElement('h3');
-        title.textContent = execution.taskType === 'post' ? 'Post' : 'Doomscroll';
+        title.textContent = execution.taskType === 'post' ? 'Post'
+            : execution.taskType === 'reels-doomscroll' ? 'Facebook Reels' : 'Doomscroll';
         const meta = document.createElement('p');
         meta.textContent = `${formatDate(execution.scheduledFor)}${execution.error ? ` · ${execution.error}` : ''}`;
         copy.append(title, meta);
@@ -613,7 +666,7 @@ function renderDeviceExecutions(executions) {
         state.textContent = execution.status;
         const actions = document.createElement('div');
         actions.className = 'inline-actions';
-        if (execution.status === 'queued' || (execution.status === 'running' && execution.taskType === 'doomscroll')) {
+        if (execution.status === 'queued' || (execution.status === 'running' && execution.taskType !== 'post')) {
             actions.append(taskActionButton(execution.status === 'queued' ? 'Cancel' : 'Stop', async () => {
                 await jsonRequest(`/api/executions/${execution.id}/stop`, { method: 'POST' });
             }));

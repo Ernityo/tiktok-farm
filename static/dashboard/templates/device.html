@@ -71,6 +71,13 @@
                     </div>
                     <p>Run a timed, personality-driven doomscrolling session on this device.</p>
                 </section>
+                <section class="panel">
+                    <div class="section-heading">
+                        <div><span class="eyebrow">Facebook</span><h2>Reels doomscroll</h2></div>
+                        <button id="open-fbreels" class="button secondary" type="button">Configure</button>
+                    </div>
+                    <p>Scroll Facebook Reels and like some of them. Facebook must already be logged in on the phone.</p>
+                </section>
                 <section class="panel post-card">
                     <div><span class="eyebrow">TikTok</span><h2>Create a post</h2></div>
                     <p>Upload a video or ordered slideshow, then save it as a draft or publish it.</p>
@@ -78,7 +85,7 @@
                 </section>
                 <section class="panel activity-card">
                     <div><span class="eyebrow">Device activity</span><h2>Automation log</h2></div>
-                    <p>Live output from the latest doomscroll or post automation on this device.</p>
+                    <p>Live output from the latest automation on this device.</p>
                     <section id="device-activity" class="run-panel loading-card"
                         hx-get="/api/devices/__DEVICE_UDID__/fragments/activity" hx-trigger="load" hx-swap="outerHTML">
                         <span class="spinner" aria-hidden="true"></span>Loading recent activity…
@@ -218,6 +225,57 @@
             <div class="form-actions">
                 <button id="cancel-doomscroll" class="button secondary" type="button">Cancel</button>
                 <button class="button primary" type="submit">Start doomscroll</button>
+            </div>
+        </form>
+    </dialog>
+    <dialog id="fbreels-dialog">
+        <form id="fbreels-form" class="modal" hx-post="/api/devices/__DEVICE_UDID__/fragments/facebook-reels-run"
+            hx-target="#device-activity" hx-swap="outerHTML" hx-disabled-elt="button">
+            <div class="modal-head">
+                <div><span class="eyebrow">Facebook</span><h2>Configure Reels doomscroll</h2></div>
+                <button id="close-fbreels" class="icon-button" type="button">Close</button>
+            </div>
+            <p>Opens Facebook, goes to Reels, watches and swipes. Likes are only tapped when the J'aime button is clearly found and the Reel isn't already liked.</p>
+            <label for="fbreels-duration">Duration (minutes)</label>
+            <input id="fbreels-duration" name="durationMinutes" type="number" min="1" max="180" value="5" required>
+            <div class="duration-shortcuts">
+                <button type="button" data-fbreels-duration="1">1 min</button>
+                <button type="button" data-fbreels-duration="5">5 min</button>
+                <button type="button" data-fbreels-duration="15">15 min</button>
+            </div>
+            <label for="fbreels-personality">Personality</label>
+            <select id="fbreels-personality" name="personality">
+                <option value="skimmer">Skimmer</option>
+                <option value="casual" selected>Casual</option>
+                <option value="engaged">Engaged</option>
+            </select>
+            <fieldset><legend>Engagement</legend><div class="choices">
+                <label><input type="checkbox" name="likeEnabled" checked> Like Reels</label>
+            </div></fieldset>
+            <label class="checkbox-option"><input id="fbreels-recurring" type="checkbox"> Recurring</label>
+            <div id="fbreels-start-options" class="field">
+                <label for="fbreels-start-kind">Start</label>
+                <select id="fbreels-start-kind"><option value="now">Now</option><option value="once">Once</option></select>
+            </div>
+            <div id="fbreels-once-fields" class="schedule-fields" hidden>
+                <div class="field"><label for="fbreels-run-at">One-time date and time</label><input id="fbreels-run-at" type="datetime-local"></div>
+            </div>
+            <div id="fbreels-recurring-fields" class="schedule-fields" hidden>
+                <div class="field"><label for="fbreels-frequency">Repeat</label><select id="fbreels-frequency"><option value="daily">Daily</option><option value="weekly">Weekly</option></select></div>
+                <div class="field"><label for="fbreels-local-time">Time</label><input id="fbreels-local-time" name="localTime" type="time" value="09:00"></div>
+                <fieldset id="fbreels-weekday-fields" class="weekday-field" hidden><legend>Days</legend><div class="weekday-options">
+                    <label><input type="checkbox" value="1" checked><span>Mon</span></label><label><input type="checkbox" value="2" checked><span>Tue</span></label>
+                    <label><input type="checkbox" value="3" checked><span>Wed</span></label><label><input type="checkbox" value="4" checked><span>Thu</span></label>
+                    <label><input type="checkbox" value="5" checked><span>Fri</span></label><label><input type="checkbox" value="6"><span>Sat</span></label>
+                    <label><input type="checkbox" value="0"><span>Sun</span></label>
+                </div></fieldset>
+            </div>
+            <div id="fbreels-run-window-field" class="field schedule-window" hidden><label for="fbreels-run-window">Run window (minutes)</label><input id="fbreels-run-window" name="runWindowMinutes" type="number" min="1" max="1440" value="30"></div>
+            <input id="fbreels-schedule-kind" name="scheduleKind" type="hidden" value="now"><input id="fbreels-weekdays" name="weekdays" type="hidden" value="1,2,3,4,5">
+            <input id="fbreels-run-at-iso" name="runAt" type="hidden"><input class="browser-timezone" name="timezone" type="hidden">
+            <div class="form-actions">
+                <button id="cancel-fbreels" class="button secondary" type="button">Cancel</button>
+                <button class="button primary" type="submit">Start Reels doomscroll</button>
             </div>
         </form>
     </dialog>
