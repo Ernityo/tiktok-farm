@@ -139,6 +139,11 @@ export class WdaRemoteControl {
     }
 
     async request(pathname: string, options: RequestInit = {}): Promise<Response> {
+        // WDA answers a bodyless POST with an empty 400, so give command
+        // endpoints like /wda/homescreen and /wda/lock an empty JSON object.
+        if (options.method === 'POST' && options.body === undefined) {
+            options = { ...options, headers: { 'content-type': 'application/json', ...options.headers }, body: '{}' };
+        }
         let response: Response;
         try {
             response = await this.fetch(`${this.wdaUrl}${pathname}`, {
@@ -204,18 +209,31 @@ export class WdaRemoteControl {
     async unlock(udid: string): Promise<void> {
         this.assertTarget(udid);
         if (!(await this.isLocked(udid))) return;
-        if (!this.passcode) {
-            throw new RemoteDeviceError('IOS_PASSCODE is not configured; cannot unlock the device');
+        if (this.passcode !== undefined && !/^\d+$/.test(this.passcode)) {
+            throw new RemoteDeviceError('IOS_PASSCODE must contain only digits');
         }
-        // WDA's /wda/unlock presses Home twice, which wakes the screen and
-        // surfaces the passcode keypad, but it then waits for the screen to
-        // report unlocked and errors out because a passcode is still required.
-        // That's expected here — the keypad is up, so ignore the error and
-        // move on to entering the passcode.
-        try {
-            await this.request('/wda/unlock', { method: 'POST' });
-        } catch {
-            // ignore — see comment above
+        // WDA's own /wda/unlock just presses Home twice, which only works on
+        // Home-button phones: on Face ID models (iPhone X and later) the lock
+        // screen stays up until it is swiped away. So press Home once to wake
+        // the screen, then swipe up from the bottom edge. Without a passcode
+        // that lands on the last app / Home Screen; with one, the keypad.
+        await this.pressHome();
+        await sleep(600);
+        const { screenSize } = await this.getScreenInfo(udid);
+        await this.swipeUpFromBottom(screenSize);
+        await sleep(800);
+        if (!this.passcode) {
+            if (await this.isLocked(udid)) {
+                // A notification or the screen dimming can eat the first swipe.
+                await this.pressHome();
+                await sleep(600);
+                await this.swipeUpFromBottom(screenSize);
+                await sleep(800);
+            }
+            if (await this.isLocked(udid)) {
+                throw new RemoteDeviceError('Device is still locked after swiping up; if it has a passcode, save it on the device page');
+            }
+            return;
         }
         for (const character of this.passcode) {
             const digit = Number(character);
@@ -236,6 +254,27 @@ export class WdaRemoteControl {
         }
     }
 
+    private async pressHome(): Promise<void> {
+        await this.request('/wda/pressButton', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name: 'home' }),
+        });
+    }
+
+    private async swipeUpFromBottom({ width, height }: ScreenSize): Promise<void> {
+        const x = Math.round(width / 2);
+        const gesture = planTouchGesture({
+            type: 'swipe', startX: x, startY: height - 8, endX: x, endY: Math.round(height * 0.45),
+            durationMs: 250, humanize: 'path',
+        }, { width, height });
+        await this.request('/wda/absolute-actions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ actions: pointerSource(gesture.actions.map(withViewportOrigin)) }),
+        });
+    }
+
     async performAction(udid: string, action: RemoteAction, hooks: PerformActionHooks = {}): Promise<void> {
         this.assertTarget(udid);
         if (action.type === 'home') {
@@ -246,8 +285,13 @@ export class WdaRemoteControl {
             await this.unlock(udid);
             return;
         }
-        if (action.type === 'lock' || action.type === 'wake') {
-            await this.request(action.type === 'lock' ? '/wda/lock' : '/wda/unlock', { method: 'POST' });
+        if (action.type === 'lock') {
+            await this.request('/wda/lock', { method: 'POST' });
+            return;
+        }
+        if (action.type === 'wake') {
+            // A Home press lights the screen without leaving the lock screen.
+            await this.pressHome();
             return;
         }
         if (action.type === 'volumeUp' || action.type === 'volumeDown') {
@@ -271,6 +315,10 @@ export class WdaRemoteControl {
             body: JSON.stringify({ actions: pointerSource(gesture.actions.map(withViewportOrigin)) }),
         });
     }
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function errorMessage(error: unknown): string {
