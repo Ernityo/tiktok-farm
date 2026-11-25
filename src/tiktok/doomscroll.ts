@@ -1,9 +1,12 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+
 import { remote, type Browser } from 'webdriverio';
 
 import { loadRegisteredDevices, resolveDeviceCoordinates, WdaRemoteControl } from '@git-agni/phone-farm-core';
 import { coordinateProfile, registeredAccounts } from './runtime-settings.js';
 import { switchTikTokAccount, tapCoordinate } from './actions.js';
-import { detectEngagementControls } from './engagement-controls.js';
+import { detectEngagementControls, type EngagementControls } from './engagement-controls.js';
 import {
     PROFILES,
     clampToDeadline,
@@ -79,8 +82,10 @@ const allowedAccounts = switchAccountName
 if (switchAccountName && !allowedAccounts.includes(switchAccountName)) {
     throw new Error(`TikTok account "${switchAccountName}" is not listed in devices.json for device ${udid}`);
 }
-let { x: likeX, y: likeY } = tiktokCoordinates.like;
-let { x: saveX, y: saveY } = tiktokCoordinates.save;
+// The like/save buttons move up and down between videos (music credits, long
+// captions), so they are located on screen per video. The profile values only
+// tell the detector how far apart the heart and bookmark are.
+const expectedRailGapPt = tiktokCoordinates.save.y - tiktokCoordinates.like.y;
 const { x: swipeX, startY: swipeStartY, endY: swipeEndY, durationMs: swipeDurationMs } = tiktokCoordinates.swipe;
 const wdaUrl = process.env.WDA_URL;
 const tiktokBundleId = process.env.TIKTOK_BUNDLE_ID ?? 'com.zhiliaoapp.musically';
@@ -148,14 +153,6 @@ function interactionPauseMs(): number {
     return Math.round(200 + Math.random() * 400);
 }
 
-async function doubleTapCoordinate(driver: Browser, x: number, y: number, label: string): Promise<void> {
-    await tapCoordinate(driver, x, y, label);
-    // Short, fixed gap so TikTok's gesture recognizer reads this as a
-    // double-tap-to-like rather than two separate taps.
-    await driver.pause(130);
-    await tapCoordinate(driver, x, y, label);
-}
-
 let driver: Browser | undefined;
 let videosViewed = 0;
 let swipes = 0;
@@ -197,22 +194,48 @@ try {
         await driver.pause(1500);
     }
 
-    try {
-        const [screenshot, screen] = await Promise.all([
-            remoteControl.getScreenshot(udid),
-            remoteControl.getScreenInfo(udid),
-        ]);
-        const detected = await detectEngagementControls(screenshot, screen.scale);
-        if (detected) {
-            ({ x: likeX, y: likeY } = detected.like);
-            ({ x: saveX, y: saveY } = detected.save);
-            console.log(`Detected TikTok engagement controls: like=(${likeX}, ${likeY}) save=(${saveX}, ${saveY}) confidence=${detected.confidence.toFixed(3)}`);
-        } else {
-            console.log(`Could not confidently detect TikTok engagement controls; using ${coordinateProfile(registeredDevice)} profile coordinates`);
+    const { scale } = await remoteControl.getScreenInfo(udid);
+
+    // Locates the like/save buttons on the video currently on screen.
+    // Undefined means "not confident" — the caller skips the tap rather than
+    // risk hitting Follow, a link, or the video itself.
+    // Debug mode (DOOMSCROLL_DEBUG_DIR=<folder>): saves a screenshot before and
+    // after every like/save/swipe so each tap can be reviewed afterwards.
+    // Adds ~1 s of settle time per screenshot; off by default.
+    const debugDir = process.env.DOOMSCROLL_DEBUG_DIR ? path.resolve(process.env.DOOMSCROLL_DEBUG_DIR) : undefined;
+    let debugSequence = 0;
+    const debugShot = async (label: string, screenshot?: Buffer, settleMs = 0): Promise<void> => {
+        if (!debugDir) return;
+        try {
+            if (settleMs) await driver!.pause(settleMs);
+            await mkdir(debugDir, { recursive: true });
+            debugSequence += 1;
+            const file = path.join(debugDir, `${String(debugSequence).padStart(3, '0')}-video${videosViewed}-${label}.png`);
+            await writeFile(file, screenshot ?? await remoteControl.getScreenshot(udid));
+            console.log(`[debug] screenshot ${file}`);
+        } catch (error) {
+            console.log(`[debug] screenshot failed: ${error instanceof Error ? error.message : String(error)}`);
         }
-    } catch (error) {
-        console.log(`Engagement control detection failed; using profile coordinates: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    };
+
+    const locateControls = async (): Promise<EngagementControls | undefined> => {
+        try {
+            const screenshot = await remoteControl.getScreenshot(udid);
+            await debugShot('detect', screenshot);
+            const detected = await detectEngagementControls(
+                screenshot, scale, { expectedGapPt: expectedRailGapPt },
+            );
+            if (detected) {
+                console.log(`Detected controls: like=(${detected.like.x}, ${detected.like.y}) save=(${detected.save.x}, ${detected.save.y}) confidence=${detected.confidence.toFixed(3)} alreadyLiked=${detected.liked} alreadySaved=${detected.saved}`);
+            } else {
+                console.log('Could not confidently detect like/save on this video; skipping engagement');
+            }
+            return detected;
+        } catch (error) {
+            console.log(`Control detection failed; skipping engagement: ${error instanceof Error ? error.message : String(error)}`);
+            return undefined;
+        }
+    };
 
     const deadline = Date.now() + durationMinutes * 60_000;
 
@@ -221,19 +244,28 @@ try {
         videosViewed += 1;
         if (stopRequested || !hasTimeRemaining(Date.now(), deadline)) break;
 
-        if (likeEnabled && decideLike(profile)) {
+        const wantLike = likeEnabled && decideLike(profile);
+        const wantSave = saveEnabled && decideSave(profile);
+        const controls = wantLike || wantSave ? await locateControls() : undefined;
+        if (stopRequested || !hasTimeRemaining(Date.now(), deadline)) break;
+
+        // The heart and bookmark are toggles: tapping an already-liked/saved
+        // video would undo it, so those taps are skipped.
+        if (wantLike && controls && !controls.liked) {
             await cancellableDelay(clampToDeadline(Date.now(), deadline, interactionPauseMs()));
             if (stopRequested || !hasTimeRemaining(Date.now(), deadline)) break;
-            await doubleTapCoordinate(driver, likeX, likeY, 'Like');
+            await tapCoordinate(driver, controls.like.x, controls.like.y, 'Like');
             likes += 1;
+            await debugShot('after-like', undefined, 800);
         }
         if (stopRequested || !hasTimeRemaining(Date.now(), deadline)) break;
 
-        if (saveEnabled && decideSave(profile)) {
+        if (wantSave && controls && !controls.saved) {
             await cancellableDelay(clampToDeadline(Date.now(), deadline, interactionPauseMs()));
             if (stopRequested || !hasTimeRemaining(Date.now(), deadline)) break;
-            await tapCoordinate(driver, saveX, saveY, 'Save');
+            await tapCoordinate(driver, controls.save.x, controls.save.y, 'Save');
             saves += 1;
+            await debugShot('after-save', undefined, 800);
         }
         if (stopRequested || !hasTimeRemaining(Date.now(), deadline)) break;
 
@@ -246,6 +278,7 @@ try {
         await cancellableDelay(clampToDeadline(Date.now(), deadline, interactionPauseMs()));
         if (stopRequested || !hasTimeRemaining(Date.now(), deadline)) break;
 
+        await debugShot('before-swipe');
         // Coordinate actions bypass XCTest's expensive application-element
         // lookup, which can hang on TikTok's continuously updating feed.
         await driver.performActions([{
@@ -262,6 +295,8 @@ try {
         }]);
         await driver.releaseActions();
         swipes += 1;
+        console.log(`Swiped (${swipeX}, ${swipeStartY}) -> (${swipeX}, ${swipeEndY})`);
+        await debugShot('after-swipe', undefined, 1000);
     }
 
     const elapsedMs = Date.now() - runStartedAt;

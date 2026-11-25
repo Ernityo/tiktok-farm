@@ -39,7 +39,8 @@
     "preweb": "npm run build:web",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.web.json --noEmit",
     "test": "node --import tsx --test test/*.test.ts",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "detect:check": "node --env-file-if-exists=.env --env-file-if-exists=.env.devices --import tsx src/tiktok/detect-controls-check.ts"
   },
   "engines": {
     "node": ">=22"
