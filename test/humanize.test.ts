@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { humanSwipe, humanTap, jitterPoint, type PointerAction } from '../src/devices/humanize.js';
+import { humanSwipe, humanTap, jitterPoint, pathFromActions, type PointerAction } from '../src/devices/humanize.js';
+import { planTouchGesture } from '../src/devices/wda-remote.js';
 
 // Small deterministic PRNG so failures are reproducible.
 function seeded(seed: number): () => number {
@@ -80,4 +81,77 @@ test('humanSwipe varies endpoints, duration and path, within bounds', () => {
     }
     assert.ok(durations.size > 50);
     assert.ok(curved > 100, `curved ${curved}`);
+});
+
+test('pathFromActions tracks the finger from touch-down to lift-off', () => {
+    const path = pathFromActions([
+        { type: 'pointerMove', duration: 0, x: 10, y: 100 },
+        { type: 'pointerDown', button: 0 },
+        { type: 'pause', duration: 80 },
+        { type: 'pointerMove', duration: 50, x: 12, y: 60 },
+        { type: 'pointerMove', duration: 40, x: 15, y: 20 },
+        { type: 'pointerUp', button: 0 },
+    ]);
+    assert.deepEqual(path, [
+        { x: 10, y: 100, t: 0 }, { x: 10, y: 100, t: 80 }, { x: 12, y: 60, t: 130 }, { x: 15, y: 20, t: 170 },
+    ]);
+});
+
+const screen = { width: 375, height: 667 };
+
+test('planTouchGesture keeps calibration/plugin input exact', () => {
+    const tap = planTouchGesture({ type: 'tap', x: 100, y: 200 }, screen, seeded(4));
+    assert.deepEqual(tap.actions, [
+        { type: 'pointerMove', duration: 0, x: 100, y: 200 },
+        { type: 'pointerDown', button: 0 },
+        { type: 'pause', duration: 80 },
+        { type: 'pointerUp', button: 0 },
+    ]);
+    const swipe = planTouchGesture({ type: 'swipe', startX: 187, startY: 500, endX: 187, endY: 150, durationMs: 300 }, screen, seeded(4));
+    assert.equal(moves(swipe.actions).length, 2);
+    assert.deepEqual(swipe.touch, {
+        type: 'swipe', startX: 187, startY: 500, endX: 187, endY: 150, durationMs: 300,
+        path: [{ x: 187, y: 500, t: 0 }, { x: 187, y: 500, t: 100 }, { x: 187, y: 150, t: 400 }],
+    });
+});
+
+test('planTouchGesture humanizes dashboard taps without moving them', () => {
+    const random = seeded(5);
+    const holds = new Set<number>();
+    for (let i = 0; i < 200; i += 1) {
+        const { actions, touch } = planTouchGesture({ type: 'tap', x: 100, y: 200, humanize: true }, screen, random);
+        assert.deepEqual(touch, { type: 'tap', x: 100, y: 200 });
+        assert.deepEqual(moves(actions)[0], { type: 'pointerMove', duration: 0, x: 100, y: 200 });
+        holds.add(actions.reduce((sum, a) => sum + ('duration' in a ? a.duration : 0), 0));
+    }
+    assert.ok(holds.size > 20);
+});
+
+test("planTouchGesture 'path' keeps endpoints and duration, 'full' varies them", () => {
+    const random = seeded(6);
+    const base = { type: 'swipe' as const, startX: 187, startY: 500, endX: 187, endY: 150, durationMs: 300 };
+    let fullMoved = 0;
+    for (let i = 0; i < 200; i += 1) {
+        const path = planTouchGesture({ ...base, humanize: 'path' }, screen, random).touch;
+        assert.equal(path.type, 'swipe');
+        if (path.type !== 'swipe') return;
+        assert.deepEqual([path.startX, path.startY, path.endX, path.endY, path.durationMs], [187, 500, 187, 150, 300]);
+        assert.ok(path.path!.length >= 8);
+
+        const full = planTouchGesture({ ...base, humanize: 'full' }, screen, random).touch;
+        if (full.type !== 'swipe') return;
+        if (full.startX !== 187 || full.endY !== 150 || full.durationMs !== 300) fullMoved += 1;
+    }
+    assert.ok(fullMoved > 150);
+});
+
+test('planTouchGesture never sends points off screen', () => {
+    const random = seeded(7);
+    for (let i = 0; i < 200; i += 1) {
+        const { actions } = planTouchGesture(
+            { type: 'swipe', startX: 0, startY: 667, endX: 375, endY: 0, durationMs: 300, humanize: 'full' }, screen, random);
+        for (const move of moves(actions)) {
+            assert.ok(move.x >= 0 && move.x <= 375 && move.y >= 0 && move.y <= 667);
+        }
+    }
 });

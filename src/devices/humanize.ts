@@ -2,7 +2,8 @@
 // pixel with the exact same press length, and swipes a perfectly straight
 // line at a perfectly constant speed every time, is easy to fingerprint.
 // Everything here is pure (randomness is injectable) so it can be tested;
-// the WebDriver calls live in src/tiktok/actions.ts.
+// automation (src/tiktok/actions.ts) and the dashboard remote control
+// (wda-remote.ts) both build their gestures from it.
 
 export type Random = () => number;
 
@@ -176,3 +177,36 @@ export function humanSwipe(
     return { start, end, durationMs: totalMs, actions };
 }
 
+/** A point along a gesture, `t` ms after the finger touched down. */
+export interface TimedPoint { x: number; y: number; t: number }
+
+/**
+ * Where the finger is over time, for drawing the real trajectory on the live
+ * screen overlay. Starts at touch-down (t = 0) and ends at lift-off.
+ */
+export function pathFromActions(actions: readonly PointerAction[]): TimedPoint[] {
+    const path: TimedPoint[] = [];
+    let current: Point = { x: 0, y: 0 };
+    let down = false;
+    let t = 0;
+    for (const action of actions) {
+        if (action.type === 'pointerMove') {
+            current = { x: action.x, y: action.y };
+            if (down) {
+                t += action.duration;
+                path.push({ ...current, t });
+            }
+        } else if (action.type === 'pointerDown') {
+            down = true;
+            path.push({ ...current, t });
+        } else if (action.type === 'pause') {
+            if (down && action.duration > 0) {
+                t += action.duration;
+                path.push({ ...current, t });
+            }
+        } else if (down) {
+            break;
+        }
+    }
+    return path;
+}

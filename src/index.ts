@@ -25,5 +25,5 @@ export {
     type RegistrationUpdate,
 } from './devices/registration.js';
 export * from './devices/wda-remote.js';
-export { emitTouch, type TouchEvent, type TouchEventMessage } from './devices/touch-events.js';
+export { emitTouch, type TouchEvent, type TouchEventMessage, type TouchPathPoint } from './devices/touch-events.js';
 export * from './devices/humanize.js';

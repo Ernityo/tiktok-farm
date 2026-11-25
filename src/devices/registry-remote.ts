@@ -1,6 +1,6 @@
 import { coordinatesForProfile } from './coordinates.js';
 import { loadRegisteredDevices } from './registry.js';
-import { WdaRemoteControl, type RemoteAction, type RemoteControl, type ScreenInfo } from './wda-remote.js';
+import { WdaRemoteControl, type PerformActionHooks, type RemoteAction, type RemoteControl, type ScreenInfo } from './wda-remote.js';
 import { passcodeForDevice } from './secrets.js';
 
 export class RegistryWdaRemoteControl implements RemoteControl {
@@ -30,6 +30,6 @@ export class RegistryWdaRemoteControl implements RemoteControl {
     async getScreenInfo(udid: string): Promise<ScreenInfo> { return (await this.control(udid)).getScreenInfo(udid); }
     async getScreenshot(udid: string): Promise<Buffer> { return (await this.control(udid)).getScreenshot(udid); }
     async getMjpegStream(udid: string, signal?: AbortSignal): Promise<Response> { return (await this.control(udid)).getMjpegStream(udid, signal); }
-    async performAction(udid: string, action: RemoteAction): Promise<void> { return (await this.control(udid)).performAction(udid, action); }
+    async performAction(udid: string, action: RemoteAction, hooks?: PerformActionHooks): Promise<void> { return (await this.control(udid)).performAction(udid, action, hooks); }
     async isLocked(udid: string): Promise<boolean> { return (await this.control(udid)).isLocked(udid); }
 }

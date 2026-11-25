@@ -6,7 +6,7 @@ import type { DeviceAutomation, PluginProcessSpecification, TaskExecutionContext
 import { discoverConnectedDevices, type Device } from '../devices/discovery.js';
 import { loadRegisteredDevices, type RegisteredDevice } from '../devices/registry.js';
 import { passcodeForDevice } from '../devices/secrets.js';
-import { emitTouch } from '../devices/touch-events.js';
+import { emitTouch, type TouchEvent } from '../devices/touch-events.js';
 import { WdaRemoteControl } from '../devices/wda-remote.js';
 import type { ExecutionRow } from '../database/schema.js';
 import type { PluginRegistry } from '../registry.js';
@@ -45,6 +45,7 @@ function deviceAutomation(registered: RegisteredDevice, passcode: string | undef
         wdaUrl: `http://127.0.0.1:${registered.wdaLocalPort ?? Number(process.env.WDA_LOCAL_PORT ?? 8100)}`,
         passcode,
     });
+    const onTouch = (touch: TouchEvent) => emitTouch(touch, { udid });
     const appRequest = async (pathname: string, bundleId: string): Promise<void> => {
         await remote.request(pathname, {
             method: 'POST',
@@ -65,14 +66,11 @@ function deviceAutomation(registered: RegisteredDevice, passcode: string | undef
             signal?.addEventListener('abort', onAbort, { once: true });
         }),
         screenshot: () => remote.getScreenshot(udid),
-        tap: (x, y) => {
-            emitTouch({ type: 'tap', x, y }, { udid });
-            return remote.performAction(udid, { type: 'tap', x, y });
-        },
-        swipe: (startX, startY, endX, endY, durationMs) => {
-            emitTouch({ type: 'swipe', startX, startY, endX, endY, durationMs }, { udid });
-            return remote.performAction(udid, { type: 'swipe', startX, startY, endX, endY, durationMs });
-        },
+        // Plugin taps/swipes stay exact; plugins that want variation can
+        // randomize their own coordinates.
+        tap: (x, y) => remote.performAction(udid, { type: 'tap', x, y }, { onTouch }),
+        swipe: (startX, startY, endX, endY, durationMs) =>
+            remote.performAction(udid, { type: 'swipe', startX, startY, endX, endY, durationMs }, { onTouch }),
     };
 }
 

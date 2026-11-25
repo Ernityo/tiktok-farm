@@ -408,10 +408,10 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
         if (await options.scheduler.activeExecution(request.params.udid)) {
             return reply.code(409).send({ error: 'Remote input is disabled while automation is running' });
         }
-        if (request.body.type === 'tap' || request.body.type === 'swipe') {
-            touchEvents.dispatch({ udid: request.params.udid, source: 'remote', at: Date.now(), touch: request.body });
-        }
-        await remote.performAction(request.params.udid, request.body);
+        // The overlay shows what is actually performed (after randomization).
+        await remote.performAction(request.params.udid, request.body, {
+            onTouch: (touch) => touchEvents.dispatch({ udid: request.params.udid, source: 'remote', at: Date.now(), touch }),
+        });
         return { ok: true };
     });
     // Server-sent events: every tap/swipe performed on this device (remote

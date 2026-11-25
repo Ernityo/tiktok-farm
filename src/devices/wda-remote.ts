@@ -1,4 +1,6 @@
 import { coordinatesForProfile } from './coordinates.js';
+import { humanSwipe, humanTap, pathFromActions, type PointerAction, type Random } from './humanize.js';
+import type { TouchEvent } from './touch-events.js';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
@@ -14,7 +16,9 @@ export interface ScreenInfo {
 }
 
 export type RemoteAction =
-    | { type: 'tap'; x: number; y: number }
+    // `humanize`: vary press length and add a tiny finger roll; the point
+    // itself is kept (a mouse click is already imprecise).
+    | { type: 'tap'; x: number; y: number; humanize?: boolean }
     | { type: 'home' }
     | { type: 'lock' }
     | { type: 'wake' }
@@ -28,7 +32,16 @@ export type RemoteAction =
         endX: number;
         endY: number;
         durationMs: number;
+        // 'path': keep the given endpoints and duration but follow a curved,
+        // variable-speed trajectory. 'full': also randomize endpoints and
+        // duration. Omitted: exact straight-line swipe (calibration, plugins).
+        humanize?: 'path' | 'full';
     };
+
+export interface PerformActionHooks {
+    /** Called with the touch about to be performed, after any randomization. */
+    onTouch?(touch: TouchEvent): void;
+}
 
 export interface PasscodeKeypadLayout {
     // x for columns [1,4,7/0], [2,5,8], [3,6,9]
@@ -75,7 +88,7 @@ export interface RemoteControl {
     getScreenshot(udid: string): Promise<Buffer>;
     /** `signal` should be tied to the client request so the upstream device stream closes when the viewer leaves. */
     getMjpegStream(udid: string, signal?: AbortSignal): Promise<Response>;
-    performAction(udid: string, action: RemoteAction): Promise<void>;
+    performAction(udid: string, action: RemoteAction, hooks?: PerformActionHooks): Promise<void>;
     isLocked(udid: string): Promise<boolean>;
     /** Drop any cached client for this device so its next use re-reads devices.json. */
     forget?(udid: string): void;
@@ -210,10 +223,11 @@ export class WdaRemoteControl {
                 throw new RemoteDeviceError('IOS_PASSCODE must contain only digits');
             }
             const { x, y } = passcodeDigitPoint(digit, this.passcodeKeypadLayout);
+            const { actions } = planTouchGesture({ type: 'tap', x, y, humanize: true }, { width: Infinity, height: Infinity });
             await this.request('/wda/absolute-actions', {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ actions: tapActions({ type: 'tap', x, y }) }),
+                body: JSON.stringify({ actions: pointerSource(actions.map(withViewportOrigin)) }),
             });
             await new Promise((resolve) => setTimeout(resolve, 250));
         }
@@ -222,7 +236,7 @@ export class WdaRemoteControl {
         }
     }
 
-    async performAction(udid: string, action: RemoteAction): Promise<void> {
+    async performAction(udid: string, action: RemoteAction, hooks: PerformActionHooks = {}): Promise<void> {
         this.assertTarget(udid);
         if (action.type === 'home') {
             await this.request('/wda/homescreen', { method: 'POST' });
@@ -249,11 +263,12 @@ export class WdaRemoteControl {
         // just to validate coordinates on every single tap/swipe.
         const screen = this.cachedScreenInfo ?? await this.getScreenInfo(udid);
         validateAction(action, screen.screenSize);
-        const actions = action.type === 'tap' ? tapActions(action) : swipeActions(action);
+        const gesture = planTouchGesture(action, screen.screenSize);
+        hooks.onTouch?.(gesture.touch);
         await this.request('/wda/absolute-actions', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ actions }),
+            body: JSON.stringify({ actions: pointerSource(gesture.actions.map(withViewportOrigin)) }),
         });
     }
 }
@@ -287,23 +302,68 @@ function pointerSource(actions: W3cActionItem[]): W3cPointerSource[] {
     }];
 }
 
-function tapActions({ x, y }: Extract<RemoteAction, { type: 'tap' }>): W3cPointerSource[] {
-    return pointerSource([
-        { type: 'pointerMove', duration: 0, x, y, origin: 'viewport' },
-        { type: 'pointerDown', button: 0 },
-        { type: 'pause', duration: 80 },
-        { type: 'pointerUp', button: 0 },
-    ]);
+export interface TouchGesture {
+    actions: PointerAction[];
+    touch: TouchEvent;
 }
 
-function swipeActions({
-    startX, startY, endX, endY, durationMs,
-}: Extract<RemoteAction, { type: 'swipe' }>): W3cPointerSource[] {
-    return pointerSource([
-        { type: 'pointerMove', duration: 0, x: startX, y: startY, origin: 'viewport' },
-        { type: 'pointerDown', button: 0 },
-        { type: 'pause', duration: 100 },
-        { type: 'pointerMove', duration: durationMs, x: endX, y: endY, origin: 'viewport' },
-        { type: 'pointerUp', button: 0 },
-    ]);
+const EXACT_TAP_HOLD_MS = 80;
+const EXACT_SWIPE_HOLD_MS = 100;
+
+/**
+ * Turn a dashboard tap/swipe into the pointer actions to perform plus the
+ * touch to show on the live overlay, applying the requested randomization.
+ * Points are kept on screen.
+ */
+export function planTouchGesture(
+    action: Extract<RemoteAction, { type: 'tap' | 'swipe' }>,
+    screenSize: ScreenSize,
+    random: Random = Math.random,
+): TouchGesture {
+    const keepOnScreen = (items: PointerAction[]): PointerAction[] => items.map((item) => item.type === 'pointerMove'
+        ? { ...item, x: Math.min(screenSize.width, Math.max(0, item.x)), y: Math.min(screenSize.height, Math.max(0, item.y)) }
+        : item);
+    if (action.type === 'tap') {
+        const actions = keepOnScreen(action.humanize === true
+            ? humanTap({ x: action.x, y: action.y }, { radius: 0 }, random).actions
+            : [
+                { type: 'pointerMove', duration: 0, x: action.x, y: action.y },
+                { type: 'pointerDown', button: 0 },
+                { type: 'pause', duration: EXACT_TAP_HOLD_MS },
+                { type: 'pointerUp', button: 0 },
+            ]);
+        return { actions, touch: { type: 'tap', x: action.x, y: action.y } };
+    }
+    const from = { x: action.startX, y: action.startY };
+    const to = { x: action.endX, y: action.endY };
+    let actions: PointerAction[];
+    if (action.humanize === 'full') {
+        actions = humanSwipe(from, to, action.durationMs, {}, random).actions;
+    } else if (action.humanize === 'path') {
+        const none = { x: 0, y: 0 };
+        actions = humanSwipe(from, to, action.durationMs, { startRadius: none, endRadius: none, durationJitter: 0 }, random).actions;
+    } else {
+        actions = [
+            { type: 'pointerMove', duration: 0, x: from.x, y: from.y },
+            { type: 'pointerDown', button: 0 },
+            { type: 'pause', duration: EXACT_SWIPE_HOLD_MS },
+            { type: 'pointerMove', duration: action.durationMs, x: to.x, y: to.y },
+            { type: 'pointerUp', button: 0 },
+        ];
+    }
+    actions = keepOnScreen(actions);
+    return { actions, touch: swipeTouch(actions) };
+}
+
+/** Overlay event for a swipe, including its real trajectory. */
+export function swipeTouch(actions: readonly PointerAction[]): Extract<TouchEvent, { type: 'swipe' }> {
+    const path = pathFromActions(actions);
+    const start = path[0] ?? { x: 0, y: 0, t: 0 };
+    const end = path.at(-1) ?? start;
+    const movementMs = actions.reduce((sum, item) => sum + (item.type === 'pointerMove' ? item.duration : 0), 0);
+    return { type: 'swipe', startX: start.x, startY: start.y, endX: end.x, endY: end.y, durationMs: movementMs, path };
+}
+
+function withViewportOrigin(item: PointerAction): W3cActionItem {
+    return item.type === 'pointerMove' ? { ...item, origin: 'viewport' } : item;
 }

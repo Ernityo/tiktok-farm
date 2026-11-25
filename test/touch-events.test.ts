@@ -9,6 +9,11 @@ test('parseTouchEventMessage accepts taps and swipes and rejects junk', () => {
     const swipe = parseTouchEventMessage(JSON.stringify({ udid: 'u1', touch: { type: 'swipe', startX: 1, startY: 2, endX: 3, endY: 4, durationMs: 300 } }));
     assert.equal(swipe?.touch.type, 'swipe');
     assert.equal(swipe?.source, 'automation');
+    const path = [{ x: 1, y: 2, t: 0 }, { x: 2, y: 3, t: 100 }, { x: 3, y: 4, t: 300 }];
+    const curved = parseTouchEventMessage(JSON.stringify({ udid: 'u1', touch: { type: 'swipe', startX: 1, startY: 2, endX: 3, endY: 4, durationMs: 300, path } }));
+    assert.deepEqual(curved?.touch.type === 'swipe' && curved.touch.path, path);
+    const badPath = parseTouchEventMessage(JSON.stringify({ udid: 'u1', touch: { type: 'swipe', startX: 1, startY: 2, endX: 3, endY: 4, durationMs: 300, path: [{ x: 'a' }] } }));
+    assert.equal(badPath?.touch.type === 'swipe' && badPath.touch.path, undefined);
     assert.equal(parseTouchEventMessage('not json'), undefined);
     assert.equal(parseTouchEventMessage(JSON.stringify({ udid: 'u1', touch: { type: 'tap', x: 'a', y: 1 } })), undefined);
     assert.equal(parseTouchEventMessage(JSON.stringify({ touch: { type: 'tap', x: 1, y: 1 } })), undefined);

@@ -8,9 +8,18 @@ import dgram from 'node:dgram';
 // listening (web server down) just means the datagram is dropped — touch
 // visualisation must never slow down or break automation.
 
+/** A point the finger passed through, `t` ms after touch-down. */
+export interface TouchPathPoint { x: number; y: number; t: number }
+
 export type TouchEvent =
     | { type: 'tap'; x: number; y: number }
-    | { type: 'swipe'; startX: number; startY: number; endX: number; endY: number; durationMs: number };
+    | {
+        type: 'swipe'; startX: number; startY: number; endX: number; endY: number; durationMs: number;
+        /** The real trajectory, when known (curved path, variable speed). */
+        path?: TouchPathPoint[];
+    };
+
+const MAX_PATH_POINTS = 64;
 
 export type TouchSource = 'remote' | 'automation';
 
@@ -53,6 +62,16 @@ function isFiniteNumber(value: unknown): value is number {
     return typeof value === 'number' && Number.isFinite(value);
 }
 
+function parsePath(value: unknown): TouchPathPoint[] | undefined {
+    if (!Array.isArray(value) || value.length < 2 || value.length > MAX_PATH_POINTS) return;
+    const path: TouchPathPoint[] = [];
+    for (const point of value as Array<Partial<Record<string, unknown>>>) {
+        if (!point || !isFiniteNumber(point.x) || !isFiniteNumber(point.y) || !isFiniteNumber(point.t)) return;
+        path.push({ x: point.x, y: point.y, t: point.t });
+    }
+    return path;
+}
+
 export function parseTouchEventMessage(raw: string): TouchEventMessage | undefined {
     try {
         const value = JSON.parse(raw) as Partial<TouchEventMessage>;
@@ -64,11 +83,13 @@ export function parseTouchEventMessage(raw: string): TouchEventMessage | undefin
             return { udid: value.udid, source, at, touch: { type: 'tap', x: touch.x, y: touch.y } };
         }
         if (touch.type === 'swipe' && [touch.startX, touch.startY, touch.endX, touch.endY, touch.durationMs].every(isFiniteNumber)) {
+            const path = parsePath(touch.path);
             return {
                 udid: value.udid, source, at,
                 touch: {
                     type: 'swipe', startX: touch.startX as number, startY: touch.startY as number,
                     endX: touch.endX as number, endY: touch.endY as number, durationMs: touch.durationMs as number,
+                    ...(path ? { path } : {}),
                 },
             };
         }

@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { Browser } from 'webdriverio';
 
 import {
-    emitTouch, humanSwipe, humanTap,
+    emitTouch, humanSwipe, humanTap, swipeTouch,
     type HumanSwipe, type Point, type SwipeOptions, type TapOptions, type WdaRemoteControl,
 } from '@git-agni/phone-farm-core';
 import { findHandleMatch, pointFromWord, recognizeWords, type OcrWord } from './ocr.js';
@@ -27,9 +27,7 @@ export async function swipeCoordinates(
     driver: Browser, from: Point, to: Point, durationMs: number, options: SwipeOptions = {},
 ): Promise<HumanSwipe> {
     const swipe = humanSwipe(from, to, durationMs, options);
-    emitTouch({
-        type: 'swipe', startX: swipe.start.x, startY: swipe.start.y, endX: swipe.end.x, endY: swipe.end.y, durationMs: swipe.durationMs,
-    });
+    emitTouch(swipeTouch(swipe.actions));
     // Coordinate actions bypass XCTest's expensive application-element
     // lookup, which can hang on TikTok's continuously updating feed.
     await driver.performActions([{ type: 'pointer', id: 'finger', parameters: { pointerType: 'touch' }, actions: swipe.actions }]);

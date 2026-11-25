@@ -281,7 +281,7 @@ function directionalSwipe(direction) {
         down: [centerX, top, centerX, bottom],
     };
     const [startX, startY, endX, endY] = points[direction];
-    return { type: 'swipe', startX, startY, endX, endY, durationMs: 350 };
+    return { type: 'swipe', startX, startY, endX, endY, durationMs: 350, humanize: 'full' };
 }
 elements.remoteButtons.forEach((button) => {
     button.addEventListener('click', () => {
@@ -312,7 +312,7 @@ elements.screen.addEventListener('pointerup', (event) => {
     pointerStart = undefined;
     const distance = Math.hypot(end.x - start.x, end.y - start.y);
     if (distance < 12) {
-        void sendAction({ type: 'tap', x: end.x, y: end.y });
+        void sendAction({ type: 'tap', x: end.x, y: end.y, humanize: true });
     }
     else {
         const durationMs = Math.max(150, Math.min(1200, Math.round(performance.now() - (start.time ?? 0))));
@@ -323,6 +323,7 @@ elements.screen.addEventListener('pointerup', (event) => {
             endX: end.x,
             endY: end.y,
             durationMs,
+            humanize: 'path',
         });
     }
 });
@@ -356,20 +357,34 @@ function drawTouch({ source, touch }) {
         }
     }
     else {
-        const durationMs = Math.max(150, Math.min(touch.durationMs + 100, 3000));
+        // Older senders only report start/end: treat that as a straight line.
+        const path = touch.path && touch.path.length >= 2
+            ? touch.path
+            : [{ x: touch.startX, y: touch.startY, t: 0 }, { x: touch.endX, y: touch.endY, t: touch.durationMs + 100 }];
+        const first = path[0];
+        const last = path[path.length - 1];
+        const totalMs = Math.max(1, last.t - first.t);
+        const durationMs = Math.max(150, Math.min(totalMs, 3000));
         activeMs = reducedMotion ? 0 : durationMs;
-        const trail = svgElement('line', {
-            class: 'touch-trail', x1: touch.startX, y1: touch.startY, x2: touch.endX, y2: touch.endY,
-            'stroke-width': radius * 0.9, pathLength: 1, 'stroke-dasharray': 1, 'stroke-dashoffset': reducedMotion ? 0 : 1,
+        const trail = svgElement('polyline', {
+            class: 'touch-trail', points: path.map(({ x, y }) => `${x},${y}`).join(' '),
+            'stroke-width': radius * 0.9, 'stroke-linejoin': 'round',
+            pathLength: 1, 'stroke-dasharray': 1, 'stroke-dashoffset': reducedMotion ? 0 : 1,
         });
-        const start = svgElement('circle', { class: 'touch-ring', cx: touch.startX, cy: touch.startY, r: radius * 0.8, 'stroke-width': 2 * unit });
-        const finger = svgElement('circle', { class: 'touch-dot', cx: touch.endX, cy: touch.endY, r: radius * 0.7, 'stroke-width': 2 * unit });
+        const start = svgElement('circle', { class: 'touch-ring', cx: first.x, cy: first.y, r: radius * 0.8, 'stroke-width': 2 * unit });
+        const finger = svgElement('circle', { class: 'touch-dot', cx: last.x, cy: last.y, r: radius * 0.7, 'stroke-width': 2 * unit });
         group.append(trail, start, finger);
         if (!reducedMotion) {
-            trail.animate([{ strokeDashoffset: 1 }, { strokeDashoffset: 0 }], { duration: durationMs, easing: 'ease-in-out', fill: 'forwards' });
-            const dx = touch.startX - touch.endX;
-            const dy = touch.startY - touch.endY;
-            finger.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'translate(0, 0)' }], { duration: durationMs, easing: 'ease-in-out', fill: 'forwards' });
+            // One keyframe per path point, placed at its real time, so the dot
+            // follows the actual curve and speeds up / slows down like the finger.
+            const lengths = [0];
+            for (let i = 1; i < path.length; i += 1) {
+                lengths.push(lengths[i - 1] + Math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y));
+            }
+            const totalLength = lengths[lengths.length - 1] || 1;
+            const offsets = path.map(({ t }) => Math.min(1, Math.max(0, (t - first.t) / totalMs)));
+            trail.animate(path.map((_, i) => ({ strokeDashoffset: 1 - lengths[i] / totalLength, offset: offsets[i] })), { duration: durationMs, easing: 'linear', fill: 'forwards' });
+            finger.animate(path.map(({ x, y }, i) => ({ transform: `translate(${x - last.x}px, ${y - last.y}px)`, offset: offsets[i] })), { duration: durationMs, easing: 'linear', fill: 'forwards' });
         }
     }
     group.animate([{ opacity: 1 }, { opacity: 1, offset: 0.25 }, { opacity: 0 }], {
