@@ -91,6 +91,46 @@ export const DEVICE_COORDINATES = {
             swipe: { x: 187, startY: 550, endY: 150, durationMs: 450 },
         },
     },
+    // 414×896 pt (also iPhone 11). Feed targets (tabs, create, like, save,
+    // swipe) were measured on a real XR; the rest are scaled from iphone8 and
+    // should be verified / calibrated from the dashboard.
+    iphonexr: {
+        displayName: 'iPhone XR / 11',
+        productTypes: ['iPhone11,8', 'iPhone12,1'],
+        screenSize: { width: 414, height: 896 },
+        passcodeKeypad: {
+            columnX: [114, 211, 304],
+            rowY: [295, 466, 571, 680],
+        },
+        tiktok: {
+            profileTab: { x: 372, y: 840 },
+            homeTab: { x: 41, y: 840 },
+            accountSwitcher: { x: 207, y: 182 },
+            create: { x: 207, y: 837 },
+            upload: { x: 33, y: 830 },
+            selectMultiple: { x: 24, y: 813 },
+            useLayout: { x: 24, y: 684 },
+            picker: {
+                circleX: 117,
+                columnStep: 138,
+                firstY: 658,
+                trayY: 523,
+                rowStep: 138,
+                cellX: 69,
+                cellStep: 138,
+                cellY: 706,
+            },
+            pickerNext: { x: 306, y: 812 },
+            editorNext: { x: 306, y: 832 },
+            caption: { x: 120, y: 260 },
+            keyboardBack: { x: 22, y: 66 },
+            draft: { x: 108, y: 825 },
+            finish: { x: 306, y: 825 },
+            like: { x: 383, y: 471 },
+            save: { x: 383, y: 603 },
+            swipe: { x: 207, startY: 740, endY: 200, durationMs: 450 },
+        },
+    },
 } satisfies Record<string, DeviceCoordinates>;
 
 export type CoordinateProfile = keyof typeof DEVICE_COORDINATES;

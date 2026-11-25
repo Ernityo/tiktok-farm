@@ -3,7 +3,7 @@
 **Short answer to "can people add coordinate configs?":** not at runtime. A
 coordinate profile is a compiled constant in the source. `devices.json` only
 *selects* one that already exists. Adding a new layout means editing two files
-and redeploying. Only the `iphone8` profile ships today.
+and redeploying. Profiles shipping today: `iphone8` (375 × 667) and `iphonexr` (414 × 896, iPhone XR / 11).
 
 ## What a profile is
 
