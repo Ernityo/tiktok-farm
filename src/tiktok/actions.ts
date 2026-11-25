@@ -2,24 +2,39 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Browser } from 'webdriverio';
 
-import { emitTouch, type WdaRemoteControl } from '@git-agni/phone-farm-core';
+import {
+    emitTouch, humanSwipe, humanTap,
+    type HumanSwipe, type Point, type SwipeOptions, type TapOptions, type WdaRemoteControl,
+} from '@git-agni/phone-farm-core';
 import { findHandleMatch, pointFromWord, recognizeWords, type OcrWord } from './ocr.js';
 
-export async function tapCoordinate(driver: Browser, x: number, y: number, label: string): Promise<void> {
-    emitTouch({ type: 'tap', x, y });
-    await driver.performActions([{
-        type: 'pointer',
-        id: 'finger',
-        parameters: { pointerType: 'touch' },
-        actions: [
-            { type: 'pointerMove', duration: 0, x, y },
-            { type: 'pointerDown', button: 0 },
-            { type: 'pause', duration: 100 },
-            { type: 'pointerUp', button: 0 },
-        ],
-    }]);
+// Every automated tap lands a few points off-target with a variable press
+// length (see humanize.ts). `radius` caps the offset — keep it under half the
+// size of the button being tapped.
+export async function tapCoordinate(
+    driver: Browser, x: number, y: number, label: string, options: TapOptions = {},
+): Promise<void> {
+    const { point, actions } = humanTap({ x, y }, options);
+    emitTouch({ type: 'tap', x: point.x, y: point.y });
+    await driver.performActions([{ type: 'pointer', id: 'finger', parameters: { pointerType: 'touch' }, actions }]);
     await driver.releaseActions();
-    console.log(`Tapped ${label} at (${x}, ${y})`);
+    console.log(`Tapped ${label} at (${point.x}, ${point.y}) [target (${x}, ${y})]`);
+}
+
+// Swipe with randomized start/end, duration, curved path and speed profile.
+// Returns what was actually performed, for logging.
+export async function swipeCoordinates(
+    driver: Browser, from: Point, to: Point, durationMs: number, options: SwipeOptions = {},
+): Promise<HumanSwipe> {
+    const swipe = humanSwipe(from, to, durationMs, options);
+    emitTouch({
+        type: 'swipe', startX: swipe.start.x, startY: swipe.start.y, endX: swipe.end.x, endY: swipe.end.y, durationMs: swipe.durationMs,
+    });
+    // Coordinate actions bypass XCTest's expensive application-element
+    // lookup, which can hang on TikTok's continuously updating feed.
+    await driver.performActions([{ type: 'pointer', id: 'finger', parameters: { pointerType: 'touch' }, actions: swipe.actions }]);
+    await driver.releaseActions();
+    return swipe;
 }
 
 export interface AccountSwitchCoords {

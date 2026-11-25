@@ -3,9 +3,9 @@ import path from 'node:path';
 
 import { remote, type Browser } from 'webdriverio';
 
-import { emitTouch, loadRegisteredDevices, resolveDeviceCoordinates, WdaRemoteControl } from '@git-agni/phone-farm-core';
+import { loadRegisteredDevices, resolveDeviceCoordinates, WdaRemoteControl } from '@git-agni/phone-farm-core';
 import { coordinateProfile, registeredAccounts } from './runtime-settings.js';
-import { switchTikTokAccount, tapCoordinate } from './actions.js';
+import { swipeCoordinates, switchTikTokAccount, tapCoordinate } from './actions.js';
 import { detectAd, type AdDetection } from './ad-detection.js';
 import { detectEngagementControls, type EngagementControls } from './engagement-controls.js';
 import {
@@ -306,24 +306,16 @@ try {
         const startY = isAd ? adSwipeStartY : swipeStartY;
         const durationMs = isAd ? adSwipeDurationMs : swipeDurationMs;
         await debugShot(isAd ? 'before-swipe-ad' : 'before-swipe');
-        emitTouch({ type: 'swipe', startX: swipeX, startY, endX: swipeX, endY: swipeEndY, durationMs });
-        // Coordinate actions bypass XCTest's expensive application-element
-        // lookup, which can hang on TikTok's continuously updating feed.
-        await driver.performActions([{
-            type: 'pointer',
-            id: 'finger',
-            parameters: { pointerType: 'touch' },
-            actions: [
-                { type: 'pointerMove', duration: 0, x: swipeX, y: startY },
-                { type: 'pointerDown', button: 0 },
-                { type: 'pause', duration: 100 },
-                { type: 'pointerMove', duration: durationMs, x: swipeX, y: swipeEndY },
-                { type: 'pointerUp', button: 0 },
-            ],
-        }]);
-        await driver.releaseActions();
+        const swipe = await swipeCoordinates(
+            driver,
+            { x: swipeX, y: startY },
+            { x: swipeX, y: swipeEndY },
+            durationMs,
+            // On ads, never let the start drift further down toward the CTA.
+            isAd ? { startRadius: { x: 18, y: 6 } } : {},
+        );
         swipes += 1;
-        console.log(`Swiped (${swipeX}, ${startY}) -> (${swipeX}, ${swipeEndY}) in ${durationMs} ms${isAd ? ' [ad]' : ''}`);
+        console.log(`Swiped (${swipe.start.x}, ${swipe.start.y}) -> (${swipe.end.x}, ${swipe.end.y}) in ${swipe.durationMs} ms${isAd ? ' [ad]' : ''}`);
         await debugShot('after-swipe', undefined, 1000);
     }
 
