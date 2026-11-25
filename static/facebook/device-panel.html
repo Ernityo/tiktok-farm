@@ -3,7 +3,7 @@
 <form id="facebook-reels-form" class="facebook-form">
   <h3>Reels doomscroll</h3>
   <div class="timing"><label>Duration (minutes)<input name="duration" type="number" min="1" max="180" value="5" required></label><label>Personality<select name="personality"><option>casual</option><option>skimmer</option><option>engaged</option></select></label></div>
-  <div><label><input name="like" type="checkbox" checked> Like</label></div>
+  <div class="timing"><label><span><input name="like" type="checkbox" checked> Like</span></label><label>Watch to the end (% of Reels)<input name="fullWatch" type="number" min="0" max="100" value="20" required></label></div>
   <div class="timing"><label>Schedule<select name="timingKind"><option value="now">Run now</option><option value="once">Once</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label><label>When / local time<input name="time" type="datetime-local"></label><label>Weekdays (0–6)<input name="weekdays" placeholder="1,3,5"></label></div>
   <button type="submit">Schedule Reels doomscroll</button>
 </form>
@@ -27,7 +27,7 @@
     event.preventDefault(); result.textContent = 'Scheduling…';
     try {
       var form = new FormData(event.currentTarget);
-      var payload = {durationMinutes: Number(form.get('duration')), personality: form.get('personality'), likeEnabled: form.has('like')};
+      var payload = {durationMinutes: Number(form.get('duration')), personality: form.get('personality'), likeEnabled: form.has('like'), fullWatchPercent: Number(form.get('fullWatch'))};
       var response = await fetch('/api/schedules', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({deviceUdid: deviceUdid, task: {pluginId: 'com.git-agni.facebook', taskType: 'reels-doomscroll', taskVersion: 1, payload: payload}, timing: timing(form), assetIds: []})});
       if (!response.ok) throw new Error((await response.json()).error || 'Request failed');
       result.textContent = 'Task scheduled.';

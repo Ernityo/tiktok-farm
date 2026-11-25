@@ -14,7 +14,11 @@ type ReelsDoomscrollPayload = JsonObject & {
     durationMinutes: number;
     personality: 'skimmer' | 'casual' | 'engaged';
     likeEnabled: boolean;
+    fullWatchPercent: number;
 };
+
+/** Used when a payload predates the setting. */
+export const DEFAULT_FULL_WATCH_PERCENT = 20;
 
 function objectPayload(value: JsonValue): Record<string, JsonValue> {
     if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error('Payload must be an object');
@@ -27,6 +31,7 @@ function createReelsDoomscrollTask(configuration: FacebookPluginConfiguration): 
         validate(value) {
             const input = objectPayload(value);
             const { durationMinutes, personality, likeEnabled } = input;
+            const fullWatchPercent = input.fullWatchPercent ?? DEFAULT_FULL_WATCH_PERCENT;
             if (typeof durationMinutes !== 'number' || !Number.isInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 180) {
                 throw new Error('durationMinutes must be between 1 and 180');
             }
@@ -34,7 +39,10 @@ function createReelsDoomscrollTask(configuration: FacebookPluginConfiguration): 
                 throw new Error('Invalid personality');
             }
             if (typeof likeEnabled !== 'boolean') throw new Error('likeEnabled must be boolean');
-            return { durationMinutes, personality, likeEnabled };
+            if (typeof fullWatchPercent !== 'number' || !Number.isInteger(fullWatchPercent) || fullWatchPercent < 0 || fullWatchPercent > 100) {
+                throw new Error('fullWatchPercent must be between 0 and 100');
+            }
+            return { durationMinutes, personality, likeEnabled, fullWatchPercent };
         },
         summarize: (payload) => `Facebook Reels · ${payload.personality} · ${payload.durationMinutes} min`,
         estimateDurationMs: (payload) => payload.durationMinutes * 60_000,
@@ -49,6 +57,7 @@ function createReelsDoomscrollTask(configuration: FacebookPluginConfiguration): 
                 DOOMSCROLL_DURATION_MINUTES: String(payload.durationMinutes),
                 DOOMSCROLL_PERSONALITY: payload.personality,
                 DOOMSCROLL_LIKE_ENABLED: String(payload.likeEnabled),
+                DOOMSCROLL_FULL_WATCH_PERCENT: String(payload.fullWatchPercent),
             },
         }),
     };
@@ -86,6 +95,7 @@ export function createFacebookPlugin(configuration: FacebookPluginConfiguration 
                                 payload: {
                                     durationMinutes: Number(body.durationMinutes), personality: body.personality ?? '',
                                     likeEnabled: body.likeEnabled === 'on',
+                                    ...(body.fullWatchPercent ? { fullWatchPercent: Number(body.fullWatchPercent) } : {}),
                                 },
                             },
                             timing,

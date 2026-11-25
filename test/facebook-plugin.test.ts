@@ -15,7 +15,9 @@ const request = (payload: Record<string, unknown>) => ({
 test('Facebook plugin validates Reels doomscroll tasks', () => {
     const registry = new PluginRegistry([plugin]);
     const value = registry.validate(request({ durationMinutes: 10, personality: 'engaged', likeEnabled: true, extra: 1 }) as never);
-    assert.deepEqual(value.task.payload, { durationMinutes: 10, personality: 'engaged', likeEnabled: true });
+    assert.deepEqual(value.task.payload, { durationMinutes: 10, personality: 'engaged', likeEnabled: true, fullWatchPercent: 20 });
+    const custom = registry.validate(request({ durationMinutes: 10, personality: 'casual', likeEnabled: false, fullWatchPercent: 0 }) as never);
+    assert.deepEqual(custom.task.payload, { durationMinutes: 10, personality: 'casual', likeEnabled: false, fullWatchPercent: 0 });
 });
 
 test('Facebook Reels doomscroll rejects bad payloads', () => {
@@ -24,6 +26,8 @@ test('Facebook Reels doomscroll rejects bad payloads', () => {
     assert.throws(() => registry.validate(request({ durationMinutes: 181, personality: 'casual', likeEnabled: true }) as never), /durationMinutes/);
     assert.throws(() => registry.validate(request({ durationMinutes: 5, personality: 'bored', likeEnabled: true }) as never), /personality/);
     assert.throws(() => registry.validate(request({ durationMinutes: 5, personality: 'casual', likeEnabled: 'yes' }) as never), /likeEnabled/);
+    assert.throws(() => registry.validate(request({ durationMinutes: 5, personality: 'casual', likeEnabled: true, fullWatchPercent: 101 }) as never), /fullWatchPercent/);
+    assert.throws(() => registry.validate(request({ durationMinutes: 5, personality: 'casual', likeEnabled: true, fullWatchPercent: 12.5 }) as never), /fullWatchPercent/);
 });
 
 test('Facebook and TikTok plugins load side by side', () => {

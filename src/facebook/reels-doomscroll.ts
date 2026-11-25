@@ -16,12 +16,22 @@ import {
     pickWatchDurationMs,
 } from '../tiktok/doomscroll-profile.js';
 import { detectReelsControls, detectTranslatedCaption, type ReelsControls } from './reels-controls.js';
+import { ReelWatchTracker, readReelProgress } from './reels-progress.js';
 
 function positiveInteger(name: string, fallback: number): number {
     const rawValue = process.env[name] ?? String(fallback);
     const value = Number.parseInt(rawValue, 10);
     if (!Number.isSafeInteger(value) || value <= 0) {
         throw new Error(`${name} must be a positive integer; received ${rawValue}`);
+    }
+    return value;
+}
+
+function percentEnv(name: string, fallback: number): number {
+    const rawValue = process.env[name] ?? String(fallback);
+    const value = Number(rawValue);
+    if (!Number.isInteger(value) || value < 0 || value > 100) {
+        throw new Error(`${name} must be an integer from 0 to 100; received ${rawValue}`);
     }
     return value;
 }
@@ -46,6 +56,9 @@ const profile = PROFILES[personality];
 const durationMinutes = positiveInteger('DOOMSCROLL_DURATION_MINUTES', 5);
 if (durationMinutes > 180) throw new Error('DOOMSCROLL_DURATION_MINUTES must be at most 180');
 const likeEnabled = booleanEnv('DOOMSCROLL_LIKE_ENABLED', true);
+// Share of (French) Reels watched to the end instead of for the profile's
+// usual watch time.
+const fullWatchPercent = percentEnv('DOOMSCROLL_FULL_WATCH_PERCENT', 20);
 const facebookBundleId = process.env.FACEBOOK_BUNDLE_ID ?? 'com.facebook.Facebook';
 const wdaUrl = process.env.WDA_URL;
 
@@ -61,6 +74,14 @@ if (!facebook) {
 // are no longer on Reels — a pop-up, another screen, another app — so stop
 // instead of swiping blindly.
 const MAX_REELS_WITHOUT_RAIL = 6;
+
+// Watching a Reel to the end: the progress bar is read every 1–1.8 s until it
+// loops back to the start. A Reel without a bar can't be followed, so it gets
+// the usual watch time instead; a very long one is left after this cap.
+const MAX_FULL_WATCH_MS = 3 * 60_000;
+const FULL_WATCH_BAR_ATTEMPTS = 3;
+const MAX_LOST_BAR_READS = 8;
+const progressPollMs = () => Math.round(1000 + Math.random() * 800);
 
 const capabilities: WebdriverIO.Capabilities & Record<string, unknown> = {
     platformName: 'iOS',
@@ -114,9 +135,14 @@ let likes = 0;
 let alreadyLiked = 0;
 let reelsWithoutRail = 0;
 let translatedSkipped = 0;
+let fullWatchChosen = 0;
+let fullWatchCompleted = 0;
+let fullWatchNoBar = 0;
+let fullWatchAbandoned = 0;
+const completedDurationsMs: number[] = [];
 const runStartedAt = Date.now();
 
-console.log(`Starting Facebook Reels doomscroll: profile=${personality} requestedDurationMinutes=${durationMinutes} likeEnabled=${likeEnabled}`);
+console.log(`Starting Facebook Reels doomscroll: profile=${personality} requestedDurationMinutes=${durationMinutes} likeEnabled=${likeEnabled} fullWatchPercent=${fullWatchPercent}`);
 
 try {
     const remoteControl = new WdaRemoteControl({ deviceUdid: udid, wdaUrl, passcodeKeypadLayout: coordinates.passcodeKeypad });
@@ -182,6 +208,52 @@ try {
         }
     };
 
+    type FullWatchOutcome = 'completed' | 'no-bar' | 'abandoned' | 'out-of-time';
+
+    // Follows the progress bar until the video loops back to its start.
+    const watchToEnd = async (): Promise<FullWatchOutcome> => {
+        const tracker = new ReelWatchTracker();
+        const startedAt = Date.now();
+        let reads = 0;
+        let lostReads = 0;
+        let sampled = false;
+        while (timeLeft()) {
+            if (Date.now() - startedAt > MAX_FULL_WATCH_MS) {
+                console.log(`Still not at the end after ${Math.round(MAX_FULL_WATCH_MS / 1000)} s; moving on`);
+                return 'abandoned';
+            }
+            let progress: number | undefined;
+            try {
+                progress = await readReelProgress(await remoteControl.getScreenshot(udid), scale);
+            } catch (error) {
+                console.log(`Progress read failed: ${error instanceof Error ? error.message : String(error)}`);
+            }
+            reads += 1;
+            if (progress === undefined) {
+                lostReads += 1;
+                if (!sampled && reads >= FULL_WATCH_BAR_ATTEMPTS) return 'no-bar';
+                if (sampled && lostReads >= MAX_LOST_BAR_READS) {
+                    console.log('Lost the progress bar; moving on');
+                    return 'abandoned';
+                }
+            } else {
+                sampled = true;
+                lostReads = 0;
+                const state = tracker.add({ atMs: Date.now(), progress });
+                if (state.kind === 'completed') {
+                    const watchedS = ((Date.now() - startedAt) / 1000).toFixed(1);
+                    if (state.durationMs) completedDurationsMs.push(state.durationMs);
+                    const length = state.durationMs ? `${(state.durationMs / 1000).toFixed(1)} s` : 'unknown';
+                    console.log(`Watched to the end: video length ≈ ${length}, followed for ${watchedS} s`);
+                    await debugShot('full-watch-end');
+                    return 'completed';
+                }
+            }
+            await cancellableDelay(clampToDeadline(Date.now(), deadline, progressPollMs()));
+        }
+        return 'out-of-time';
+    };
+
     const swipeToNext = async (): Promise<void> => {
         const { x, startY, endY, durationMs } = facebook.swipe;
         const swipe = await swipeCoordinates(driver!, { x, y: startY }, { x, y: endY }, durationMs);
@@ -223,7 +295,25 @@ try {
             await debugShot('after-skip', undefined, 1000);
             continue;
         }
-        await cancellableDelay(clampToDeadline(Date.now(), deadline, watchMs - (Date.now() - reelStartedAt)));
+        let fullyWatched = false;
+        if (fullWatchPercent > 0 && Math.random() * 100 < fullWatchPercent) {
+            fullWatchChosen += 1;
+            console.log('Watching this Reel to the end');
+            const outcome = await watchToEnd();
+            if (outcome === 'completed') {
+                fullWatchCompleted += 1;
+                fullyWatched = true;
+            } else if (outcome === 'no-bar') {
+                fullWatchNoBar += 1;
+                console.log('No progress bar on this Reel; watching it the usual time instead');
+            } else if (outcome === 'abandoned') {
+                fullWatchAbandoned += 1;
+                fullyWatched = true;
+            }
+        }
+        if (!fullyWatched) {
+            await cancellableDelay(clampToDeadline(Date.now(), deadline, watchMs - (Date.now() - reelStartedAt)));
+        }
         reelsViewed += 1;
         if (!timeLeft()) break;
 
@@ -256,7 +346,8 @@ try {
         }
         if (!timeLeft()) break;
 
-        const { linger, extraMs } = decideLinger(profile);
+        // A Reel watched to the end is left soon after it starts over.
+        const { linger, extraMs } = fullyWatched ? { linger: false, extraMs: 0 } : decideLinger(profile);
         if (linger) await cancellableDelay(clampToDeadline(Date.now(), deadline, extraMs));
         if (!timeLeft()) break;
         await cancellableDelay(clampToDeadline(Date.now(), deadline, interactionPauseMs()));
@@ -267,6 +358,12 @@ try {
     }
 
     const reason = stopRequested ? 'stopped' : 'completed';
+    const completionRate = reelsViewed ? (100 * fullWatchCompleted / reelsViewed).toFixed(1) : '0.0';
+    const averageLength = completedDurationsMs.length
+        ? `${(completedDurationsMs.reduce((sum, value) => sum + value, 0) / completedDurationsMs.length / 1000).toFixed(1)}s`
+        : 'n/a';
+    const lengths = completedDurationsMs.map((value) => `${(value / 1000).toFixed(1)}s`).join(',') || 'none';
+    console.log(`Full watches: target=${fullWatchPercent}% chosen=${fullWatchChosen} completed=${fullWatchCompleted} noBar=${fullWatchNoBar} abandoned=${fullWatchAbandoned} completionRate=${completionRate}% averageVideoLength=${averageLength} videoLengths=${lengths}`);
     console.log(`Finished Facebook Reels doomscroll: reelsViewed=${reelsViewed} swipes=${swipes} likes=${likes} alreadyLiked=${alreadyLiked} translatedSkipped=${translatedSkipped} elapsedMs=${Date.now() - runStartedAt} reason=${reason}`);
 } finally {
     if (driver) await driver.deleteSession();

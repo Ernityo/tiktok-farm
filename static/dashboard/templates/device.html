@@ -235,7 +235,7 @@
                 <div><span class="eyebrow">Facebook</span><h2>Configure Reels doomscroll</h2></div>
                 <button id="close-fbreels" class="icon-button" type="button">Close</button>
             </div>
-            <p>Opens Facebook, goes to Reels, watches and swipes. Likes are only tapped when the J'aime button is clearly found and the Reel isn't already liked.</p>
+            <p>Opens Facebook, goes to Reels, watches and swipes. Likes are only tapped when the J'aime button is clearly found and the Reel isn't already liked. Translated (non-French) Reels are skipped right away.</p>
             <label for="fbreels-duration">Duration (minutes)</label>
             <input id="fbreels-duration" name="durationMinutes" type="number" min="1" max="180" value="5" required>
             <div class="duration-shortcuts">
@@ -252,6 +252,8 @@
             <fieldset><legend>Engagement</legend><div class="choices">
                 <label><input type="checkbox" name="likeEnabled" checked> Like Reels</label>
             </div></fieldset>
+            <label for="fbreels-full-watch">Watch to the end (% of Reels)</label>
+            <input id="fbreels-full-watch" name="fullWatchPercent" type="number" min="0" max="100" value="20" required>
             <label class="checkbox-option"><input id="fbreels-recurring" type="checkbox"> Recurring</label>
             <div id="fbreels-start-options" class="field">
                 <label for="fbreels-start-kind">Start</label>
