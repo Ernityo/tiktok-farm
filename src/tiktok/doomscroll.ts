@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { remote, type Browser } from 'webdriverio';
 
-import { loadRegisteredDevices, resolveDeviceCoordinates, WdaRemoteControl } from '@git-agni/phone-farm-core';
+import { emitTouch, loadRegisteredDevices, resolveDeviceCoordinates, WdaRemoteControl } from '@git-agni/phone-farm-core';
 import { coordinateProfile, registeredAccounts } from './runtime-settings.js';
 import { switchTikTokAccount, tapCoordinate } from './actions.js';
 import { detectAd, type AdDetection } from './ad-detection.js';
@@ -306,6 +306,7 @@ try {
         const startY = isAd ? adSwipeStartY : swipeStartY;
         const durationMs = isAd ? adSwipeDurationMs : swipeDurationMs;
         await debugShot(isAd ? 'before-swipe-ad' : 'before-swipe');
+        emitTouch({ type: 'swipe', startX: swipeX, startY, endX: swipeX, endY: swipeEndY, durationMs });
         // Coordinate actions bypass XCTest's expensive application-element
         // lookup, which can hang on TikTok's continuously updating feed.
         await driver.performActions([{

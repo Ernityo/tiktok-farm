@@ -18,6 +18,7 @@ import type {
     DeviceRegistrationManager, RegistrationAction, RegistrationUpdate,
 } from '../devices/registration.js';
 import { type RemoteAction } from '../devices/wda-remote.js';
+import { TouchEventHub } from '../devices/touch-events.js';
 import { requestWdaService } from '../devices/wda-service-client.js';
 import type { DeviceConnectionStatus } from '../devices/connection-manager.js';
 import type { AuthProvider, PluginNavLink } from '../plugin.js';
@@ -31,6 +32,8 @@ export interface CreateAppOptions {
     authProvider?: AuthProvider | null;
     dashboardTheme?: DashboardTheme;
     registrations?: DeviceRegistrationManager;
+    /** Live tap/swipe feed for the device screen overlay. The caller owns its lifecycle. */
+    touchEvents?: TouchEventHub;
     logger?: boolean;
 }
 
@@ -147,6 +150,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
     }
 
     const remote = new RegistryWdaRemoteControl();
+    const touchEvents = options.touchEvents ?? new TouchEventHub();
     const logoutPath = options.authProvider?.logoutPath;
     const authNavHtml = logoutPath
         ? `<a class="button secondary app-logout" href="${escapeHtml(logoutPath)}">Log out</a>` : '';
@@ -404,8 +408,29 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
         if (await options.scheduler.activeExecution(request.params.udid)) {
             return reply.code(409).send({ error: 'Remote input is disabled while automation is running' });
         }
+        if (request.body.type === 'tap' || request.body.type === 'swipe') {
+            touchEvents.dispatch({ udid: request.params.udid, source: 'remote', at: Date.now(), touch: request.body });
+        }
         await remote.performAction(request.params.udid, request.body);
         return { ok: true };
+    });
+    // Server-sent events: every tap/swipe performed on this device (remote
+    // control or automation), for the fading overlay on the live screen.
+    app.get<{ Params: { udid: string } }>('/api/devices/:udid/remote/touches', async (request, reply) => {
+        reply.hijack();
+        const raw = reply.raw;
+        raw.writeHead(200, {
+            'content-type': 'text/event-stream',
+            'cache-control': 'no-store',
+            connection: 'keep-alive',
+            'x-accel-buffering': 'no',
+        });
+        raw.write('retry: 3000\n\n');
+        const unsubscribe = touchEvents.subscribe(request.params.udid, (message) => {
+            raw.write(`data: ${JSON.stringify(message)}\n\n`);
+        });
+        const heartbeat = setInterval(() => raw.write(': ping\n\n'), 25_000);
+        request.raw.once('close', () => { clearInterval(heartbeat); unsubscribe(); });
     });
     app.get<{ Params: { udid: string } }>('/api/devices/:udid/connection', async (request, reply) => {
         const registered = (await loadRegisteredDevices()).find(({ udid }) => udid === request.params.udid);

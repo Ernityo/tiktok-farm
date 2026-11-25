@@ -70,6 +70,7 @@ function element<T extends Element>(selector: string): T {
 const udid = decodeURIComponent(location.pathname.split('/').filter(Boolean).at(-1) ?? '');
 const elements = {
     screen: element<HTMLImageElement>('#screen'),
+    touchOverlay: element<SVGSVGElement>('#touch-overlay'),
     status: element<HTMLElement>('#status'),
     statusText: element<HTMLElement>('#status span:last-child'),
     refresh: element<HTMLButtonElement>('#refresh'),
@@ -286,6 +287,8 @@ function useDeviceSummary(summary: HTMLElement): void {
     const height = Number(summary.dataset.screenHeight);
     if (!Number.isFinite(width) || !Number.isFinite(height)) return;
     screenSize = { width, height };
+    elements.touchOverlay.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    startTouchFeed();
     const name = summary.querySelector('h1')?.textContent;
     if (name) document.title = `${name} · iOS Automation`;
     void connectRemote();
@@ -391,6 +394,77 @@ elements.screen.addEventListener('pointerup', (event) => {
     }
 });
 elements.screen.addEventListener('pointercancel', () => { pointerStart = undefined; });
+// ---- Live touch overlay -------------------------------------------------
+// Every tap/swipe sent to this phone (by you or by automation) is drawn over
+// the video and slowly fades. The SVG viewBox is in device points and uses
+// the same "contain" fit as the <img>, so points line up with the video.
+interface TouchMessage {
+    source: 'remote' | 'automation';
+    touch:
+        | { type: 'tap'; x: number; y: number }
+        | { type: 'swipe'; startX: number; startY: number; endX: number; endY: number; durationMs: number };
+}
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const TOUCH_FADE_MS = 1800;
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+let touchFeed: EventSource | undefined;
+
+function svgElement<K extends keyof SVGElementTagNameMap>(name: K, attributes: Record<string, string | number>): SVGElementTagNameMap[K] {
+    const node = document.createElementNS(SVG_NS, name);
+    for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, String(value));
+    return node;
+}
+
+function drawTouch({ source, touch }: TouchMessage): void {
+    if (!screenSize || paused) return;
+    const unit = screenSize.width / 375; // keep marks the same visual size on every iPhone
+    const radius = 16 * unit;
+    const group = svgElement('g', { class: `touch ${source}` });
+    elements.touchOverlay.append(group);
+    let activeMs = 0;
+
+    if (touch.type === 'tap') {
+        const ring = svgElement('circle', { class: 'touch-ring', cx: touch.x, cy: touch.y, r: radius, 'stroke-width': 3 * unit });
+        const dot = svgElement('circle', { class: 'touch-dot', cx: touch.x, cy: touch.y, r: radius * 0.7, 'stroke-width': 2 * unit });
+        group.append(ring, dot);
+        if (!reducedMotion) {
+            ring.style.transformOrigin = `${touch.x}px ${touch.y}px`;
+            ring.style.transformBox = 'view-box';
+            ring.animate([{ transform: 'scale(0.6)', opacity: 1 }, { transform: 'scale(2.4)', opacity: 0 }], { duration: 700, easing: 'ease-out', fill: 'forwards' });
+        }
+    } else {
+        const durationMs = Math.max(150, Math.min(touch.durationMs + 100, 3000));
+        activeMs = reducedMotion ? 0 : durationMs;
+        const trail = svgElement('line', {
+            class: 'touch-trail', x1: touch.startX, y1: touch.startY, x2: touch.endX, y2: touch.endY,
+            'stroke-width': radius * 0.9, pathLength: 1, 'stroke-dasharray': 1, 'stroke-dashoffset': reducedMotion ? 0 : 1,
+        });
+        const start = svgElement('circle', { class: 'touch-ring', cx: touch.startX, cy: touch.startY, r: radius * 0.8, 'stroke-width': 2 * unit });
+        const finger = svgElement('circle', { class: 'touch-dot', cx: touch.endX, cy: touch.endY, r: radius * 0.7, 'stroke-width': 2 * unit });
+        group.append(trail, start, finger);
+        if (!reducedMotion) {
+            trail.animate([{ strokeDashoffset: 1 }, { strokeDashoffset: 0 }], { duration: durationMs, easing: 'ease-in-out', fill: 'forwards' });
+            const dx = touch.startX - touch.endX;
+            const dy = touch.startY - touch.endY;
+            finger.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'translate(0, 0)' }], { duration: durationMs, easing: 'ease-in-out', fill: 'forwards' });
+        }
+    }
+
+    group.animate([{ opacity: 1 }, { opacity: 1, offset: 0.25 }, { opacity: 0 }], {
+        delay: activeMs, duration: TOUCH_FADE_MS, easing: 'ease-in', fill: 'forwards',
+    }).finished.then(() => group.remove(), () => group.remove());
+}
+
+function startTouchFeed(): void {
+    if (touchFeed || typeof EventSource === 'undefined') return;
+    // EventSource reconnects on its own after drops.
+    touchFeed = new EventSource(`/api/devices/${encodeURIComponent(udid)}/remote/touches`);
+    touchFeed.addEventListener('message', (event) => {
+        try { drawTouch(JSON.parse(event.data) as TouchMessage); } catch { /* ignore malformed event */ }
+    });
+}
+
 elements.screen.addEventListener('load', () => setStatus('Live video connected', 'ready'));
 elements.screen.addEventListener('error', () => {
     if (paused) return;
@@ -417,6 +491,7 @@ elements.toggle.addEventListener('click', () => {
     elements.toggle.textContent = paused ? 'Resume stream' : 'Pause stream';
     if (paused) {
         elements.screen.removeAttribute('src');
+        elements.touchOverlay.replaceChildren();
         setStatus('Video stream paused');
     } else {
         void connectRemote();

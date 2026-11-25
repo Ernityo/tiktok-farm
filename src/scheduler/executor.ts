@@ -6,6 +6,7 @@ import type { DeviceAutomation, PluginProcessSpecification, TaskExecutionContext
 import { discoverConnectedDevices, type Device } from '../devices/discovery.js';
 import { loadRegisteredDevices, type RegisteredDevice } from '../devices/registry.js';
 import { passcodeForDevice } from '../devices/secrets.js';
+import { emitTouch } from '../devices/touch-events.js';
 import { WdaRemoteControl } from '../devices/wda-remote.js';
 import type { ExecutionRow } from '../database/schema.js';
 import type { PluginRegistry } from '../registry.js';
@@ -64,10 +65,14 @@ function deviceAutomation(registered: RegisteredDevice, passcode: string | undef
             signal?.addEventListener('abort', onAbort, { once: true });
         }),
         screenshot: () => remote.getScreenshot(udid),
-        tap: (x, y) => remote.performAction(udid, { type: 'tap', x, y }),
-        swipe: (startX, startY, endX, endY, durationMs) => remote.performAction(udid, {
-            type: 'swipe', startX, startY, endX, endY, durationMs,
-        }),
+        tap: (x, y) => {
+            emitTouch({ type: 'tap', x, y }, { udid });
+            return remote.performAction(udid, { type: 'tap', x, y });
+        },
+        swipe: (startX, startY, endX, endY, durationMs) => {
+            emitTouch({ type: 'swipe', startX, startY, endX, endY, durationMs }, { udid });
+            return remote.performAction(udid, { type: 'swipe', startX, startY, endX, endY, durationMs });
+        },
     };
 }
 

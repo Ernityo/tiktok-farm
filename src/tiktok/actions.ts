@@ -2,10 +2,11 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Browser } from 'webdriverio';
 
-import type { WdaRemoteControl } from '@git-agni/phone-farm-core';
+import { emitTouch, type WdaRemoteControl } from '@git-agni/phone-farm-core';
 import { findHandleMatch, pointFromWord, recognizeWords, type OcrWord } from './ocr.js';
 
 export async function tapCoordinate(driver: Browser, x: number, y: number, label: string): Promise<void> {
+    emitTouch({ type: 'tap', x, y });
     await driver.performActions([{
         type: 'pointer',
         id: 'finger',

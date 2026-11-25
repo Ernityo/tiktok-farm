@@ -8,6 +8,7 @@ import { assertSafeBind } from '../security.js';
 import { createTikTokPlugin } from '../tiktok-plugin.js';
 import { defaultDashboardTheme } from '../dashboard-theme.js';
 import { DeviceRegistrationService } from '../devices/registration.js';
+import { TouchEventHub } from '../devices/touch-events.js';
 import { createApp, type DashboardTheme } from './app.js';
 
 export interface StartServerOptions {
@@ -35,16 +36,18 @@ export async function startServer(options: StartServerOptions = {}) {
     const scheduler = await createSchedulerRuntime(plugins);
     const registrations = new DeviceRegistrationService();
     await registrations.start();
+    const touchEvents = new TouchEventHub();
+    await touchEvents.start();
     const app = await createApp({
         plugins, scheduler: scheduler.repository, authProvider,
-        dashboardTheme: options.dashboardTheme ?? defaultDashboardTheme, registrations, logger: true,
+        dashboardTheme: options.dashboardTheme ?? defaultDashboardTheme, registrations, touchEvents, logger: true,
     });
     await app.listen({ host, port });
     const address = app.server.address() as AddressInfo;
     console.log(`Phone Farm listening on http://${host}:${address.port}`);
     return {
         app, plugins,
-        async close() { await app.close(); await registrations.close(); await scheduler.close(); },
+        async close() { await app.close(); await touchEvents.close(); await registrations.close(); await scheduler.close(); },
     };
 }
 
