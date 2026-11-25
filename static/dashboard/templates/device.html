@@ -78,6 +78,13 @@
                     </div>
                     <p>Scroll Facebook Reels and like some of them. Facebook must already be logged in on the phone.</p>
                 </section>
+                <section class="panel">
+                    <div class="section-heading">
+                        <div><span class="eyebrow">Instagram</span><h2>Reels doomscroll</h2></div>
+                        <button id="open-igreels" class="button secondary" type="button">Configure</button>
+                    </div>
+                    <p>Scroll Instagram Reels and like some of them, skipping ads. Instagram must already be logged in on the phone.</p>
+                </section>
                 <section class="panel post-card">
                     <div><span class="eyebrow">TikTok</span><h2>Create a post</h2></div>
                     <p>Upload a video or ordered slideshow, then save it as a draft or publish it.</p>
@@ -277,6 +284,59 @@
             <input id="fbreels-run-at-iso" name="runAt" type="hidden"><input class="browser-timezone" name="timezone" type="hidden">
             <div class="form-actions">
                 <button id="cancel-fbreels" class="button secondary" type="button">Cancel</button>
+                <button class="button primary" type="submit">Start Reels doomscroll</button>
+            </div>
+        </form>
+    </dialog>
+    <dialog id="igreels-dialog">
+        <form id="igreels-form" class="modal" hx-post="/api/devices/__DEVICE_UDID__/fragments/instagram-reels-run"
+            hx-target="#device-activity" hx-swap="outerHTML" hx-disabled-elt="button">
+            <div class="modal-head">
+                <div><span class="eyebrow">Instagram</span><h2>Configure Reels doomscroll</h2></div>
+                <button id="close-igreels" class="icon-button" type="button">Close</button>
+            </div>
+            <p>Opens Instagram, goes to Reels, watches and swipes. Likes are only tapped when the J'aime button is found on screen and the Reel isn't already liked. Ads ("Sponsorisée") and suggestion cards are skipped after a short look.</p>
+            <label for="igreels-duration">Duration (minutes)</label>
+            <input id="igreels-duration" name="durationMinutes" type="number" min="1" max="180" value="5" required>
+            <div class="duration-shortcuts">
+                <button type="button" data-igreels-duration="1">1 min</button>
+                <button type="button" data-igreels-duration="5">5 min</button>
+                <button type="button" data-igreels-duration="15">15 min</button>
+            </div>
+            <label for="igreels-personality">Personality</label>
+            <select id="igreels-personality" name="personality">
+                <option value="skimmer">Skimmer</option>
+                <option value="casual" selected>Casual</option>
+                <option value="engaged">Engaged</option>
+            </select>
+            <fieldset><legend>Engagement</legend><div class="choices">
+                <label><input type="checkbox" name="likeEnabled" checked> Like Reels</label>
+            </div></fieldset>
+            <label for="igreels-full-watch">Watch to the end (% of Reels)</label>
+            <input id="igreels-full-watch" name="fullWatchPercent" type="number" min="0" max="100" value="20" required>
+            <label class="checkbox-option"><input id="igreels-recurring" type="checkbox"> Recurring</label>
+            <div id="igreels-start-options" class="field">
+                <label for="igreels-start-kind">Start</label>
+                <select id="igreels-start-kind"><option value="now">Now</option><option value="once">Once</option></select>
+            </div>
+            <div id="igreels-once-fields" class="schedule-fields" hidden>
+                <div class="field"><label for="igreels-run-at">One-time date and time</label><input id="igreels-run-at" type="datetime-local"></div>
+            </div>
+            <div id="igreels-recurring-fields" class="schedule-fields" hidden>
+                <div class="field"><label for="igreels-frequency">Repeat</label><select id="igreels-frequency"><option value="daily">Daily</option><option value="weekly">Weekly</option></select></div>
+                <div class="field"><label for="igreels-local-time">Time</label><input id="igreels-local-time" name="localTime" type="time" value="09:00"></div>
+                <fieldset id="igreels-weekday-fields" class="weekday-field" hidden><legend>Days</legend><div class="weekday-options">
+                    <label><input type="checkbox" value="1" checked><span>Mon</span></label><label><input type="checkbox" value="2" checked><span>Tue</span></label>
+                    <label><input type="checkbox" value="3" checked><span>Wed</span></label><label><input type="checkbox" value="4" checked><span>Thu</span></label>
+                    <label><input type="checkbox" value="5" checked><span>Fri</span></label><label><input type="checkbox" value="6"><span>Sat</span></label>
+                    <label><input type="checkbox" value="0"><span>Sun</span></label>
+                </div></fieldset>
+            </div>
+            <div id="igreels-run-window-field" class="field schedule-window" hidden><label for="igreels-run-window">Run window (minutes)</label><input id="igreels-run-window" name="runWindowMinutes" type="number" min="1" max="1440" value="30"></div>
+            <input id="igreels-schedule-kind" name="scheduleKind" type="hidden" value="now"><input id="igreels-weekdays" name="weekdays" type="hidden" value="1,2,3,4,5">
+            <input id="igreels-run-at-iso" name="runAt" type="hidden"><input class="browser-timezone" name="timezone" type="hidden">
+            <div class="form-actions">
+                <button id="cancel-igreels" class="button secondary" type="button">Cancel</button>
                 <button class="button primary" type="submit">Start Reels doomscroll</button>
             </div>
         </form>

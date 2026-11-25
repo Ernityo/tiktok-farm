@@ -41,11 +41,11 @@ interface PostRun {
 interface DeviceSchedule {
     id: string;
     status: 'active' | 'paused' | 'completed' | 'cancelled';
-    taskType: 'doomscroll' | 'post' | 'reels-doomscroll';
+    taskType: 'doomscroll' | 'post' | 'reels-doomscroll' | 'instagram-reels-doomscroll';
     timing: { kind: string; localTime?: string; timezone?: string; weekdays?: number[]; runAt?: string };
     nextRunAt: string | null;
     payload: {
-        type: 'doomscroll' | 'post' | 'reels-doomscroll';
+        type: 'doomscroll' | 'post' | 'reels-doomscroll' | 'instagram-reels-doomscroll';
         destination?: 'draft' | 'publish';
         account?: string;
         durationMinutes?: number;
@@ -55,7 +55,7 @@ interface DeviceSchedule {
 
 interface DeviceExecution {
     id: string;
-    taskType: 'doomscroll' | 'post' | 'reels-doomscroll';
+    taskType: 'doomscroll' | 'post' | 'reels-doomscroll' | 'instagram-reels-doomscroll';
     status: string;
     scheduledFor: string;
     startedAt: string | null;
@@ -225,54 +225,62 @@ elements.doomscrollDurationButtons.forEach((button) => {
     });
 });
 
-// Facebook Reels dialog. Same scheduling fields as the TikTok doomscroll
-// dialog, with ids prefixed "fbreels-".
-const fbreels = {
-    dialog: element<HTMLDialogElement>('#fbreels-dialog'),
-    form: element<HTMLFormElement>('#fbreels-form'),
-    duration: element<HTMLInputElement>('#fbreels-duration'),
-    recurring: element<HTMLInputElement>('#fbreels-recurring'),
-    startOptions: element<HTMLElement>('#fbreels-start-options'),
-    startKind: element<HTMLSelectElement>('#fbreels-start-kind'),
-    onceFields: element<HTMLElement>('#fbreels-once-fields'),
-    recurringFields: element<HTMLElement>('#fbreels-recurring-fields'),
-    frequency: element<HTMLSelectElement>('#fbreels-frequency'),
-    weekdayFields: element<HTMLElement>('#fbreels-weekday-fields'),
-    weekdayInputs: Array.from(document.querySelectorAll<HTMLInputElement>('#fbreels-weekday-fields input[type="checkbox"]')),
-    runWindowField: element<HTMLElement>('#fbreels-run-window-field'),
-    scheduleKind: element<HTMLInputElement>('#fbreels-schedule-kind'),
-    weekdays: element<HTMLInputElement>('#fbreels-weekdays'),
-    runAt: element<HTMLInputElement>('#fbreels-run-at'),
-    runAtIso: element<HTMLInputElement>('#fbreels-run-at-iso'),
-};
+// Facebook and Instagram Reels dialogs. Same scheduling fields as the TikTok
+// doomscroll dialog, with ids prefixed "fbreels-" / "igreels-".
+function wireReelsDialog(prefix: string): void {
+    const id = <T extends Element>(name: string) => element<T>(`#${prefix}-${name}`);
+    const dialog = id<HTMLDialogElement>('dialog');
+    const form = id<HTMLFormElement>('form');
+    const duration = id<HTMLInputElement>('duration');
+    const recurringInput = id<HTMLInputElement>('recurring');
+    const startOptions = id<HTMLElement>('start-options');
+    const startKind = id<HTMLSelectElement>('start-kind');
+    const onceFields = id<HTMLElement>('once-fields');
+    const recurringFields = id<HTMLElement>('recurring-fields');
+    const frequency = id<HTMLSelectElement>('frequency');
+    const weekdayFields = id<HTMLElement>('weekday-fields');
+    const weekdayInputs = Array.from(document.querySelectorAll<HTMLInputElement>(`#${prefix}-weekday-fields input[type="checkbox"]`));
+    const runWindowField = id<HTMLElement>('run-window-field');
+    const scheduleKind = id<HTMLInputElement>('schedule-kind');
+    const weekdays = id<HTMLInputElement>('weekdays');
+    const runAt = id<HTMLInputElement>('run-at');
+    const runAtIso = id<HTMLInputElement>('run-at-iso');
 
-function updateFbreelsSchedule(): void {
-    const recurring = fbreels.recurring.checked;
-    const kind = recurring ? fbreels.frequency.value : fbreels.startKind.value;
-    fbreels.scheduleKind.value = kind;
-    fbreels.weekdays.value = selectedWeekdays(fbreels.weekdayInputs).join(',');
-    fbreels.startOptions.hidden = recurring;
-    fbreels.onceFields.hidden = recurring || kind !== 'once';
-    fbreels.recurringFields.hidden = !recurring;
-    fbreels.weekdayFields.hidden = !recurring || kind !== 'weekly';
-    fbreels.runWindowField.hidden = kind === 'now';
-    fbreels.runAt.required = kind === 'once';
+    const updateSchedule = (): void => {
+        const recurring = recurringInput.checked;
+        const kind = recurring ? frequency.value : startKind.value;
+        scheduleKind.value = kind;
+        weekdays.value = selectedWeekdays(weekdayInputs).join(',');
+        startOptions.hidden = recurring;
+        onceFields.hidden = recurring || kind !== 'once';
+        recurringFields.hidden = !recurring;
+        weekdayFields.hidden = !recurring || kind !== 'weekly';
+        runWindowField.hidden = kind === 'now';
+        runAt.required = kind === 'once';
+    };
+
+    recurringInput.addEventListener('change', updateSchedule);
+    startKind.addEventListener('change', updateSchedule);
+    frequency.addEventListener('change', updateSchedule);
+    weekdayInputs.forEach((input) => input.addEventListener('change', updateSchedule));
+    form.addEventListener('submit', () => {
+        updateSchedule();
+        runAtIso.value = runAt.value ? new Date(runAt.value).toISOString() : '';
+    });
+    element<HTMLButtonElement>(`#open-${prefix}`).addEventListener('click', () => dialog.showModal());
+    element<HTMLButtonElement>(`#close-${prefix}`).addEventListener('click', () => dialog.close());
+    element<HTMLButtonElement>(`#cancel-${prefix}`).addEventListener('click', () => dialog.close());
+    document.querySelectorAll<HTMLButtonElement>(`[data-${prefix}-duration]`).forEach((button) => {
+        button.addEventListener('click', () => { duration.value = button.getAttribute(`data-${prefix}-duration`) ?? ''; });
+    });
+    document.addEventListener('htmx:afterRequest', (event) => {
+        const detail = (event as CustomEvent<{ elt?: Element; successful?: boolean }>).detail;
+        if (detail?.elt === form && detail.successful) dialog.close();
+    });
 }
 
-fbreels.recurring.addEventListener('change', updateFbreelsSchedule);
-fbreels.startKind.addEventListener('change', updateFbreelsSchedule);
-fbreels.frequency.addEventListener('change', updateFbreelsSchedule);
-fbreels.weekdayInputs.forEach((input) => input.addEventListener('change', updateFbreelsSchedule));
-fbreels.form.addEventListener('submit', () => {
-    updateFbreelsSchedule();
-    fbreels.runAtIso.value = fbreels.runAt.value ? new Date(fbreels.runAt.value).toISOString() : '';
-});
-element<HTMLButtonElement>('#open-fbreels').addEventListener('click', () => fbreels.dialog.showModal());
-element<HTMLButtonElement>('#close-fbreels').addEventListener('click', () => fbreels.dialog.close());
-element<HTMLButtonElement>('#cancel-fbreels').addEventListener('click', () => fbreels.dialog.close());
-document.querySelectorAll<HTMLButtonElement>('[data-fbreels-duration]').forEach((button) => {
-    button.addEventListener('click', () => { fbreels.duration.value = button.dataset.fbreelsDuration ?? ''; });
-});
+wireReelsDialog('fbreels');
+wireReelsDialog('igreels');
 
 function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
@@ -354,9 +362,6 @@ document.addEventListener('htmx:afterRequest', (event) => {
     const detail = (event as CustomEvent<{ elt?: Element; successful?: boolean }>).detail;
     if (detail?.elt === elements.doomscrollForm && detail.successful) {
         elements.doomscrollDialog.close();
-    }
-    if (detail?.elt === fbreels.form && detail.successful) {
-        fbreels.dialog.close();
     }
 });
 
@@ -665,6 +670,9 @@ function taskTitle(taskType: DeviceSchedule['taskType'], payload?: DeviceSchedul
     if (taskType === 'reels-doomscroll') {
         return `Facebook Reels${payload?.durationMinutes ? ` · ${payload.durationMinutes} min` : ''}`;
     }
+    if (taskType === 'instagram-reels-doomscroll') {
+        return `Instagram Reels${payload?.durationMinutes ? ` · ${payload.durationMinutes} min` : ''}`;
+    }
     if (taskType === 'doomscroll') {
         const details = payload?.durationMinutes ? ` · ${payload.durationMinutes} min` : '';
         return `Doomscroll${details}`;
@@ -734,7 +742,8 @@ function renderDeviceExecutions(executions: DeviceExecution[]): void {
         const copy = document.createElement('div');
         const title = document.createElement('h3');
         title.textContent = execution.taskType === 'post' ? 'Post'
-            : execution.taskType === 'reels-doomscroll' ? 'Facebook Reels' : 'Doomscroll';
+            : execution.taskType === 'reels-doomscroll' ? 'Facebook Reels'
+                : execution.taskType === 'instagram-reels-doomscroll' ? 'Instagram Reels' : 'Doomscroll';
         const meta = document.createElement('p');
         meta.textContent = `${formatDate(execution.scheduledFor)}${execution.error ? ` · ${execution.error}` : ''}`;
         copy.append(title, meta);
