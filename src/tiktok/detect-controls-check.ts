@@ -13,6 +13,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 
 import { loadRegisteredDevices, resolveDeviceCoordinates, WdaRemoteControl } from '@git-agni/phone-farm-core';
+import { detectAd } from './ad-detection.js';
 import { detectEngagementControls, MIN_RAIL_CONFIDENCE } from './engagement-controls.js';
 import { coordinateProfile } from './runtime-settings.js';
 
@@ -55,6 +56,12 @@ if (detected) {
 } else {
     console.log(`NOT DETECTED (${elapsedMs} ms) — doomscroll would skip like/save on this video.`);
 }
+
+const ad = await detectAd(screenshot);
+const swipe = fallback.swipe;
+console.log(ad.isAd
+    ? `AD (label "${ad.label}") — swipe would start at y=${swipe.adStartY} instead of ${swipe.startY}`
+    : `Not an ad — swipe would start at y=${swipe.startY}`);
 
 const { width = 0, height = 0 } = await sharp(screenshot).metadata();
 const px = (value: number) => Math.round(value * scale);

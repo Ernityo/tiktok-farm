@@ -43,6 +43,12 @@ export interface DeviceCoordinates {
         swipe: {
             x: number;
             startY: number;
+            /**
+             * Start height used on ads instead of startY. Ads put sign-up
+             * forms and CTA buttons ("Regarder", "Envoyer", "Réserver") around
+             * startY; starting higher keeps the swipe on the video itself.
+             */
+            adStartY: number;
             endY: number;
             durationMs: number;
         };
@@ -88,7 +94,7 @@ export const DEVICE_COORDINATES = {
             finish: { x: 277, y: 630 },
             like: { x: 345, y: 313 },
             save: { x: 345, y: 444 },
-            swipe: { x: 187, startY: 550, endY: 150, durationMs: 450 },
+            swipe: { x: 187, startY: 550, adStartY: 420, endY: 150, durationMs: 450 },
         },
     },
     // 414×896 pt (also iPhone 11). Feed targets (tabs, create, like, save,
@@ -128,7 +134,7 @@ export const DEVICE_COORDINATES = {
             finish: { x: 306, y: 825 },
             like: { x: 383, y: 471 },
             save: { x: 383, y: 603 },
-            swipe: { x: 207, startY: 740, endY: 200, durationMs: 450 },
+            swipe: { x: 207, startY: 740, adStartY: 560, endY: 200, durationMs: 450 },
         },
     },
 } satisfies Record<string, DeviceCoordinates>;

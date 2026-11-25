@@ -6,6 +6,7 @@ import { remote, type Browser } from 'webdriverio';
 import { loadRegisteredDevices, resolveDeviceCoordinates, WdaRemoteControl } from '@git-agni/phone-farm-core';
 import { coordinateProfile, registeredAccounts } from './runtime-settings.js';
 import { switchTikTokAccount, tapCoordinate } from './actions.js';
+import { detectAd, type AdDetection } from './ad-detection.js';
 import { detectEngagementControls, type EngagementControls } from './engagement-controls.js';
 import {
     PROFILES,
@@ -86,7 +87,11 @@ if (switchAccountName && !allowedAccounts.includes(switchAccountName)) {
 // captions), so they are located on screen per video. The profile values only
 // tell the detector how far apart the heart and bookmark are.
 const expectedRailGapPt = tiktokCoordinates.save.y - tiktokCoordinates.like.y;
-const { x: swipeX, startY: swipeStartY, endY: swipeEndY, durationMs: swipeDurationMs } = tiktokCoordinates.swipe;
+const {
+    x: swipeX, startY: swipeStartY, adStartY: adSwipeStartY, endY: swipeEndY, durationMs: swipeDurationMs,
+} = tiktokCoordinates.swipe;
+// The shorter ad swipe keeps the same finger speed as the normal one.
+const adSwipeDurationMs = Math.round(swipeDurationMs * (adSwipeStartY - swipeEndY) / (swipeStartY - swipeEndY));
 const wdaUrl = process.env.WDA_URL;
 const tiktokBundleId = process.env.TIKTOK_BUNDLE_ID ?? 'com.zhiliaoapp.musically';
 
@@ -239,7 +244,24 @@ try {
 
     const deadline = Date.now() + durationMinutes * 60_000;
 
+    // Checks the post for an ad label ("Publicité", "Sponsored"...) shortly
+    // after it appears, while it is being watched. Ads can later expand into a
+    // full-screen form that hides the label, so this runs at the start.
+    const checkForAd = async (): Promise<AdDetection> => {
+        await cancellableDelay(1000);
+        if (stopRequested) return { isAd: false };
+        try {
+            const result = await detectAd(await remoteControl.getScreenshot(udid));
+            if (result.isAd) console.log(`Ad detected (label "${result.label}")`);
+            return result;
+        } catch (error) {
+            console.log(`Ad check failed; treating as a normal post: ${error instanceof Error ? error.message : String(error)}`);
+            return { isAd: false };
+        }
+    };
+
     while (!stopRequested && hasTimeRemaining(Date.now(), deadline)) {
+        const adCheck = checkForAd();
         await cancellableDelay(clampToDeadline(Date.now(), deadline, pickWatchDurationMs(profile)));
         videosViewed += 1;
         if (stopRequested || !hasTimeRemaining(Date.now(), deadline)) break;
@@ -278,7 +300,12 @@ try {
         await cancellableDelay(clampToDeadline(Date.now(), deadline, interactionPauseMs()));
         if (stopRequested || !hasTimeRemaining(Date.now(), deadline)) break;
 
-        await debugShot('before-swipe');
+        // Ads put forms and CTA buttons where the normal swipe starts, so the
+        // swipe starts higher on ads to stay on the video.
+        const { isAd } = await adCheck;
+        const startY = isAd ? adSwipeStartY : swipeStartY;
+        const durationMs = isAd ? adSwipeDurationMs : swipeDurationMs;
+        await debugShot(isAd ? 'before-swipe-ad' : 'before-swipe');
         // Coordinate actions bypass XCTest's expensive application-element
         // lookup, which can hang on TikTok's continuously updating feed.
         await driver.performActions([{
@@ -286,16 +313,16 @@ try {
             id: 'finger',
             parameters: { pointerType: 'touch' },
             actions: [
-                { type: 'pointerMove', duration: 0, x: swipeX, y: swipeStartY },
+                { type: 'pointerMove', duration: 0, x: swipeX, y: startY },
                 { type: 'pointerDown', button: 0 },
                 { type: 'pause', duration: 100 },
-                { type: 'pointerMove', duration: swipeDurationMs, x: swipeX, y: swipeEndY },
+                { type: 'pointerMove', duration: durationMs, x: swipeX, y: swipeEndY },
                 { type: 'pointerUp', button: 0 },
             ],
         }]);
         await driver.releaseActions();
         swipes += 1;
-        console.log(`Swiped (${swipeX}, ${swipeStartY}) -> (${swipeX}, ${swipeEndY})`);
+        console.log(`Swiped (${swipeX}, ${startY}) -> (${swipeX}, ${swipeEndY}) in ${durationMs} ms${isAd ? ' [ad]' : ''}`);
         await debugShot('after-swipe', undefined, 1000);
     }
 

@@ -6,7 +6,7 @@ export interface TikTokCoordinates {
         selectMultiple: Point; useLayout: Point;
         picker: { circleX: number; columnStep: number; firstY: number; trayY: number; rowStep: number; cellX: number; cellStep: number; cellY: number };
         pickerNext: Point; editorNext: Point; caption: Point; keyboardBack: Point; draft: Point; finish: Point;
-        like: Point; save: Point; swipe: { x: number; startY: number; endY: number; durationMs: number };
+        like: Point; save: Point; swipe: { x: number; startY: number; adStartY: number; endY: number; durationMs: number };
     };
 }
 
@@ -20,7 +20,7 @@ export const DEVICE_COORDINATES = {
             picker: { circleX: 106, columnStep: 126, firstY: 482, trayY: 360, rowStep: 125, cellX: 62, cellStep: 125, cellY: 526 },
             pickerNext: { x: 277, y: 617 }, editorNext: { x: 277, y: 637 }, caption: { x: 120, y: 236 },
             keyboardBack: { x: 22, y: 42 }, draft: { x: 98, y: 630 }, finish: { x: 277, y: 630 },
-            like: { x: 345, y: 313 }, save: { x: 345, y: 444 }, swipe: { x: 187, startY: 550, endY: 150, durationMs: 450 },
+            like: { x: 345, y: 313 }, save: { x: 345, y: 444 }, swipe: { x: 187, startY: 550, adStartY: 420, endY: 150, durationMs: 450 },
         },
     },
     iphonexr: {
@@ -32,7 +32,7 @@ export const DEVICE_COORDINATES = {
             picker: { circleX: 117, columnStep: 138, firstY: 658, trayY: 523, rowStep: 138, cellX: 69, cellStep: 138, cellY: 706 },
             pickerNext: { x: 306, y: 812 }, editorNext: { x: 306, y: 832 }, caption: { x: 120, y: 260 },
             keyboardBack: { x: 22, y: 66 }, draft: { x: 108, y: 825 }, finish: { x: 306, y: 825 },
-            like: { x: 383, y: 471 }, save: { x: 383, y: 603 }, swipe: { x: 207, startY: 740, endY: 200, durationMs: 450 },
+            like: { x: 383, y: 471 }, save: { x: 383, y: 603 }, swipe: { x: 207, startY: 740, adStartY: 560, endY: 200, durationMs: 450 },
         },
     },
 } satisfies Record<string, TikTokCoordinates>;
