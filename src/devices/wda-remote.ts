@@ -3,6 +3,10 @@ import { humanSwipe, humanTap, pathFromActions, type PointerAction, type Random 
 import type { TouchEvent } from './touch-events.js';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+// IOHID consumer page / Power usage: the side (lock) button.
+const HID_CONSUMER_PAGE = 0x0c;
+const HID_POWER_USAGE = 0x30;
+const SIDE_BUTTON_PRESS_S = 0.15;
 
 export interface ScreenSize {
     width: number;
@@ -254,6 +258,51 @@ export class WdaRemoteControl {
         }
     }
 
+    async lock(udid: string): Promise<void> {
+        this.assertTarget(udid);
+        if (await this.isLocked(udid)) return;
+        // WDA's /wda/lock calls XCTest's pressLockButton, which iOS ignores
+        // (it times out waiting for the lock). A synthesized side-button press
+        // works, as long as it is held long enough: 0.05s is ignored, 0.15s
+        // locks. The IOHID route needs a session, so reuse the running one
+        // (an Appium session, say) rather than replacing it, else open a
+        // short-lived one.
+        const status = await (await this.request('/status')).json() as { sessionId?: string | null };
+        const sessionId = status.sessionId ?? await this.createSession();
+        try {
+            // The first IOHID event on a freshly opened session is sometimes
+            // dropped, so press a second time if the first one didn't take.
+            // A late-landing first press just leaves the second one waking
+            // the (still locked) screen.
+            for (let press = 0; press < 2; press += 1) {
+                await this.request(`/session/${sessionId}/wda/performIoHidEvent`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ page: HID_CONSUMER_PAGE, usage: HID_POWER_USAGE, duration: SIDE_BUTTON_PRESS_S }),
+                });
+                for (let check = 0; check < 6; check += 1) {
+                    await sleep(200);
+                    if (await this.isLocked(udid)) return;
+                }
+            }
+        } finally {
+            if (!status.sessionId) await this.request(`/session/${sessionId}`, { method: 'DELETE' }).catch(() => {});
+        }
+        throw new RemoteDeviceError('Device did not lock after pressing the side button');
+    }
+
+    private async createSession(): Promise<string> {
+        const response = await this.request('/session', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ capabilities: { alwaysMatch: {} } }),
+        });
+        const payload = await response.json() as { sessionId?: string; value?: { sessionId?: string } };
+        const sessionId = payload.sessionId ?? payload.value?.sessionId;
+        if (!sessionId) throw new RemoteDeviceError('WebDriverAgent did not return a session id');
+        return sessionId;
+    }
+
     private async pressHome(): Promise<void> {
         await this.request('/wda/pressButton', {
             method: 'POST',
@@ -286,7 +335,7 @@ export class WdaRemoteControl {
             return;
         }
         if (action.type === 'lock') {
-            await this.request('/wda/lock', { method: 'POST' });
+            await this.lock(udid);
             return;
         }
         if (action.type === 'wake') {
