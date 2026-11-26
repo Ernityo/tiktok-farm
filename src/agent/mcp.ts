@@ -211,6 +211,31 @@ server.registerTool('type_text', {
     }
 });
 
+server.registerTool('unlock_phone', {
+    title: 'Unlock the phone',
+    description: 'Wakes the phone and unlocks it with its saved passcode (devices.json, else IOS_PASSCODE), the same as the dashboard\'s Unlock button. '
+        + 'Does nothing if it is already unlocked. Use it before reading or driving the screen when the phone may have gone to sleep.',
+    inputSchema: {
+        udid: z.string().optional().describe('Device UDID; only needed when several phones are registered'),
+    },
+}, async ({ udid }) => {
+    if (session) return failure('A doomscroll session is running on the phone; it keeps the phone awake');
+    try {
+        const device = resolveDevice(await loadRegisteredDevices(), udid);
+        const remote = await remotes.control(device.udid);
+        if (!await remote.isLocked(device.udid)) {
+            return { content: [{ type: 'text' as const, text: `${device.name.trim() || device.udid} is already unlocked` }] };
+        }
+        const started = Date.now();
+        await remote.unlock(device.udid);
+        const locked = await remote.isLocked(device.udid);
+        if (locked) return failure('Unlock ran but the phone still reports locked; check its passcode on the device page');
+        return { content: [{ type: 'text' as const, text: `Unlocked ${device.name.trim() || device.udid} in ${((Date.now() - started) / 1000).toFixed(1)}s` }] };
+    } catch (error) {
+        return failure(error);
+    }
+});
+
 async function shutdown(): Promise<void> {
     const running = session;
     session = undefined;
