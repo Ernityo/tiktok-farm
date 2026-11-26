@@ -10,11 +10,13 @@ import {
 import type { RegisteredDevice } from '../devices/registry.js';
 import { swipeCoordinates, switchTikTokAccount, tapCoordinate } from './actions.js';
 import { adFromWords, detectAdStrict, readCaptionWords, type AdDetection } from './ad-detection.js';
-import { timePlan, type AgentPlan, type TimedPlan } from './agent-plan.js';
+import { FULL_WATCH_CAP_MS, timePlan, type AgentPlan, type TimedPlan } from './agent-plan.js';
+import { ReelWatchTracker } from '../facebook/reels-progress.js';
 import type { Personality } from './doomscroll-profile.js';
 import { detectEngagementControls, type EngagementControls } from './engagement-controls.js';
 import { nicheForAccount, normalizeHandle, type Niche } from './niche.js';
 import { coordinateProfile, registeredAccounts } from './runtime-settings.js';
+import { readTikTokProgress } from './video-progress.js';
 
 // One agentic doomscroll session on one phone: the agent (a Claude Code
 // session, through the MCP tools in agent-mcp.ts) sees each video once, and
@@ -300,7 +302,9 @@ export class TikTokAgentSession {
                     this.saves += 1;
                 }
             }
-            await sleep(decidedAt + timed.watchMs - Date.now());
+            const watched = plan.watch === 'full'
+                ? await this.watchToEnd(decidedAt, timed.watchMs)
+                : (await sleep(decidedAt + timed.watchMs - Date.now()), { by: 'timer' as const });
 
             const ad = await video.strictAd;
             if (ad.isAd) this.ads += 1;
@@ -313,7 +317,7 @@ export class TikTokAgentSession {
             const arrivedAt = Date.now();
 
             await appendFile(path.join(this.logDirectory, 'decisions.jsonl'), `${JSON.stringify({
-                video: video.index, caption: video.caption, isAd: ad.isAd, plan, timed, liked, saved,
+                video: video.index, caption: video.caption, isAd: ad.isAd, plan, timed, watched, liked, saved,
                 decisionMs: decidedAt - video.observedAt, screenMs: arrivedAt - video.arrivedAt,
             })}\n`).catch(() => undefined);
 
@@ -322,6 +326,49 @@ export class TikTokAgentSession {
         } finally {
             this.busy = false;
         }
+    }
+
+    /**
+     * Keeps a `full` video on screen until it has played to the end, read
+     * from TikTok's progress bar (it loops, so the end shows as the fill
+     * jumping back to the start). Videos without a bar (short ones) fall back
+     * to the timed watch. Capped per personality and by the session deadline.
+     */
+    private async watchToEnd(decidedAt: number, timedWatchMs: number): Promise<
+        { by: 'progress'; completed: boolean; lastProgress: number; videoMs?: number } | { by: 'timer' }
+    > {
+        const capEnd = Math.min(decidedAt + FULL_WATCH_CAP_MS[this.personality], this.deadline);
+        const tracker = new ReelWatchTracker();
+        let lastProgress: number | undefined;
+        let misses = 0;
+        while (Date.now() < capEnd) {
+            let progress: number | undefined;
+            try {
+                progress = await readTikTokProgress(await this.remoteControl.getScreenshot(this.device.udid), this.scale);
+            } catch {
+                progress = undefined;
+            }
+            if (progress === undefined) {
+                misses += 1;
+                // Two misses before any reading: this video has no bar.
+                if (lastProgress === undefined && misses >= 2) break;
+            } else {
+                lastProgress = progress;
+                const state = tracker.add({ atMs: Date.now(), progress });
+                if (state.kind === 'completed' || progress >= 0.98) {
+                    // Swipe a moment after the loop starts, like a person would.
+                    await sleep(Math.min(300 + Math.random() * 1200, capEnd - Date.now()));
+                    const videoMs = state.kind === 'completed' ? state.durationMs : undefined;
+                    return { by: 'progress', completed: true, lastProgress: progress, ...(videoMs ? { videoMs } : {}) };
+                }
+            }
+            await sleep(Math.min(900, capEnd - Date.now()));
+        }
+        if (lastProgress === undefined) {
+            await sleep(decidedAt + timedWatchMs - Date.now());
+            return { by: 'timer' };
+        }
+        return { by: 'progress', completed: false, lastProgress };
     }
 
     private async swipe(isAd: boolean): Promise<void> {

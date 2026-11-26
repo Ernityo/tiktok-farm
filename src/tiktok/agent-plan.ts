@@ -36,6 +36,17 @@ export const WATCH_RANGES: Record<Personality, Record<WatchChoice, [number, numb
     engaged: { skip: [150, 450], short: [5000, 12000], full: [15000, 28000] },
 };
 
+/**
+ * Longest a `full` watch follows the progress bar before swiping anyway, so a
+ * multi-minute video doesn't eat the session. Without a bar, `full` uses
+ * WATCH_RANGES instead.
+ */
+export const FULL_WATCH_CAP_MS: Record<Personality, number> = {
+    skimmer: 20_000,
+    casual: 60_000,
+    engaged: 120_000,
+};
+
 /** Likes/saves done and videos judged so far in the session. */
 export interface EngagementSoFar {
     judged: number;
