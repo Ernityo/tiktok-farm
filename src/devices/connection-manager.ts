@@ -35,6 +35,8 @@ interface RuntimeState {
     device: RegisteredDevice;
     status: DeviceConnectionStatus;
     child?: ChildProcess;
+    /** Ports the running child was launched with; a change relaunches WDA. */
+    childPorts?: string;
     outputBuffer: string;
     retryAt: number;
 }
@@ -70,6 +72,10 @@ async function defaultEndpointReady(url: string): Promise<boolean> {
     } catch {
         return false;
     }
+}
+
+function portSignature(device: RegisteredDevice): string {
+    return [device.wdaLocalPort, device.mjpegLocalPort, device.wdaRemotePort, device.mjpegRemotePort].join(':');
 }
 
 function defaultSpawnSupervisor(device: RegisteredDevice): ChildProcess {
@@ -155,6 +161,10 @@ export class DeviceConnectionManager implements DeviceConnections {
             await Promise.all(devices.map(async (device) => {
                 const runtime = this.runtimes.get(device.udid) ?? this.createRuntime(device);
                 runtime.device = device;
+                if (runtime.child && runtime.childPorts !== portSignature(device)) {
+                    await this.stopChild(runtime);
+                    runtime.retryAt = 0;
+                }
                 runtime.status.physical = attached.has(device.udid) ? 'connected' : 'disconnected';
                 if (!runtime.child && this.now() >= runtime.retryAt) this.startChild(runtime);
                 const wdaPort = device.wdaLocalPort ?? Number(process.env.WDA_LOCAL_PORT ?? 8100);
@@ -228,6 +238,7 @@ export class DeviceConnectionManager implements DeviceConnections {
         try {
             const child = this.spawnSupervisor(runtime.device);
             runtime.child = child;
+            runtime.childPorts = portSignature(runtime.device);
             runtime.outputBuffer = '';
             this.update(runtime, runtime.status.physical === 'connected' ? 'connecting' : 'disconnected',
                 runtime.status.physical === 'connected' ? 'Starting WDA' : 'Waiting for the USB cable');

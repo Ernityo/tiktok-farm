@@ -317,6 +317,11 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
             if (disabled === true && await options.scheduler.activeExecution(request.params.udid)) {
                 return reply.code(409).send({ error: 'Stop the running automation before disconnecting this device' });
             }
+            // New in-phone ports relaunch WDA, which would kill a running task.
+            if ((wdaRemotePort !== undefined || mjpegRemotePort !== undefined)
+                && await options.scheduler.activeExecution(request.params.udid)) {
+                return reply.code(409).send({ error: 'Stop the running automation before changing this device’s ports' });
+            }
             const updated = await mutateRegisteredDevices((devices) => {
                 const device = devices.find((entry) => entry.udid === request.params.udid);
                 if (!device) throw httpError(404, 'Device not found');
