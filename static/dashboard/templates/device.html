@@ -60,10 +60,15 @@
                             <button class="remote-button labeled" type="button" data-remote-action="volumeUp"><span aria-hidden="true">＋</span> Volume up</button>
                             <button class="remote-button labeled" type="button" data-remote-action="volumeDown"><span aria-hidden="true">−</span> Volume down</button>
                         </div>
+                        <form id="type-form" class="type-controls">
+                            <label for="type-text">Type on phone</label>
+                            <textarea id="type-text" rows="3" maxlength="1000" placeholder="hello world" required></textarea>
+                            <button id="type-submit" class="remote-button labeled" type="submit"><span aria-hidden="true">⌨</span> Type</button>
+                        </form>
                     </div>
                 </div>
                 <div id="status" class="stream-status"><span class="dot"></span><span>Waiting for device details…</span></div>
-                <p class="hint">Click to tap and drag to swipe. Remote input pauses while a doomscroll session is running.</p>
+                <p class="hint">Click to tap and drag to swipe. To type, tap a text field (or let it find one) and use “Type on phone” — every key is tapped like a person would. Remote input pauses while a doomscroll session is running.</p>
             </section>
             <div class="action-stack">
                 <section class="panel">

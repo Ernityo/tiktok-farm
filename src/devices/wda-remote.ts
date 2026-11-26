@@ -1,6 +1,8 @@
 import { coordinatesForProfile } from './coordinates.js';
 import { humanSwipe, humanTap, pathFromActions, type PointerAction, type Random } from './humanize.js';
 import type { TouchEvent } from './touch-events.js';
+import { MAX_TYPING_LENGTH, typeOnKeyboard, type TypingReport } from './typing.js';
+import { WdaKeyboard } from './wda-keyboard.js';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 // IOHID consumer page / Power usage: the side (lock) button.
@@ -29,6 +31,10 @@ export type RemoteAction =
     | { type: 'unlock' }
     | { type: 'volumeUp' }
     | { type: 'volumeDown' }
+    // Type text by tapping each key on the on-screen keyboard, with human
+    // timing (see typing.ts). Opens the keyboard first if needed: by tapping
+    // (x, y) when given, else the first text field on screen.
+    | { type: 'type'; text: string; x?: number; y?: number; wpm?: number; typoRate?: number }
     | {
         type: 'swipe';
         startX: number;
@@ -324,8 +330,53 @@ export class WdaRemoteControl {
         });
     }
 
+    /**
+     * Types `text` on the phone like a person: opens the keyboard if needed,
+     * then taps every key with realistic rhythm. Reuses a running WDA session
+     * (an Appium one, say) or opens a short-lived one for the key lookups.
+     */
+    async typeText(
+        udid: string,
+        text: string,
+        options: { field?: { x: number; y: number }; wpm?: number; typoRate?: number; onTouch?(touch: TouchEvent): void } = {},
+    ): Promise<TypingReport> {
+        this.assertTarget(udid);
+        if (typeof text !== 'string' || !text.length) throw new RemoteDeviceError('Enter some text to type');
+        if (Array.from(text).length > MAX_TYPING_LENGTH) {
+            throw new RemoteDeviceError(`Text is too long to type (max ${MAX_TYPING_LENGTH} characters)`);
+        }
+        if (options.field) {
+            const screen = this.cachedScreenInfo ?? await this.getScreenInfo(udid);
+            if (!validatePoint(options.field.x, options.field.y, screen.screenSize)) {
+                throw new RemoteDeviceError('Text field coordinates are outside the device screen');
+            }
+        }
+        const onTap = options.onTouch ? (point: { x: number; y: number }) => options.onTouch?.({ type: 'tap', x: point.x, y: point.y }) : undefined;
+        const status = await (await this.request('/status')).json() as { sessionId?: string | null };
+        const sessionId = status.sessionId ?? await this.createSession();
+        try {
+            const keyboard = new WdaKeyboard(
+                (pathname, init) => this.request(pathname, init),
+                sessionId,
+                (actions) => pointerSource(actions.map(withViewportOrigin)),
+            );
+            await keyboard.open(options.field, onTap);
+            return await typeOnKeyboard(keyboard, text, { wpm: options.wpm, typoRate: options.typoRate, onTap });
+        } catch (error) {
+            if (error instanceof RemoteDeviceError) throw error;
+            throw new RemoteDeviceError(errorMessage(error));
+        } finally {
+            if (!status.sessionId) await this.request(`/session/${sessionId}`, { method: 'DELETE' }).catch(() => {});
+        }
+    }
+
     async performAction(udid: string, action: RemoteAction, hooks: PerformActionHooks = {}): Promise<void> {
         this.assertTarget(udid);
+        if (action.type === 'type') {
+            const field = action.x !== undefined && action.y !== undefined ? { x: action.x, y: action.y } : undefined;
+            await this.typeText(udid, action.text, { field, wpm: action.wpm, typoRate: action.typoRate, onTouch: hooks.onTouch });
+            return;
+        }
         if (action.type === 'home') {
             await this.request('/wda/homescreen', { method: 'POST' });
             return;

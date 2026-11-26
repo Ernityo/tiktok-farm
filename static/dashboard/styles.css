@@ -151,6 +151,9 @@ button:disabled { cursor: wait; opacity: .55; }
 .system-controls { display: grid; gap: 7px; width: 100%; }
 .remote-button.labeled { display: flex; align-items: center; justify-content: flex-start; gap: 9px; width: 100%; padding: 0 11px; font-size: 11px; font-weight: 750; }
 .remote-button.labeled > span:first-child { width: 15px; font-size: 17px; text-align: center; }
+.type-controls { display: grid; gap: 7px; width: 100%; }
+.type-controls label { color: #c8d0db; font-size: 11px; font-weight: 750; }
+.type-controls textarea { width: 100%; min-height: 64px; padding: 7px 8px; resize: vertical; border: 1px solid var(--border-strong); border-radius: 8px; background: #171d27; color: var(--text); font: inherit; font-size: 12px; }
 .hint { padding-top: 10px; border-top: 1px solid var(--border); font-size: 12px; }
 .automation-form { margin: 18px 0 14px; }
 .automation-form label, .modal label, .modal legend { display: block; margin-bottom: 7px; color: #c8d0db; font-size: 12px; font-weight: 750; }

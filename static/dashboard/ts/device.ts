@@ -22,7 +22,8 @@ type RemoteAction =
     | { type: 'unlock' }
     | { type: 'volumeUp' }
     | { type: 'volumeDown' }
-    | { type: 'swipe'; startX: number; startY: number; endX: number; endY: number; durationMs: number; humanize?: 'path' | 'full' };
+    | { type: 'swipe'; startX: number; startY: number; endX: number; endY: number; durationMs: number; humanize?: 'path' | 'full' }
+    | { type: 'type'; text: string };
 
 type SwipeDirection = 'left' | 'right' | 'up' | 'down';
 
@@ -78,6 +79,9 @@ const elements = {
     refresh: element<HTMLButtonElement>('#refresh'),
     toggle: element<HTMLButtonElement>('#toggle'),
     remoteButtons: Array.from(document.querySelectorAll<HTMLButtonElement>('[data-remote-action]')),
+    typeForm: element<HTMLFormElement>('#type-form'),
+    typeText: element<HTMLTextAreaElement>('#type-text'),
+    typeSubmit: element<HTMLButtonElement>('#type-submit'),
     openPost: element<HTMLButtonElement>('#open-post'),
     openDoomscroll: element<HTMLButtonElement>('#open-doomscroll'),
     doomscrollDialog: element<HTMLDialogElement>('#doomscroll-dialog'),
@@ -442,6 +446,28 @@ elements.remoteButtons.forEach((button) => {
             const swipe = directionalSwipe(action);
             if (swipe) void sendAction(swipe);
         }
+    });
+});
+
+// Types on the phone by tapping each key of the on-screen keyboard with
+// human timing, so this can take a few seconds per word.
+elements.typeForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const text = elements.typeText.value;
+    if (!text) return;
+    elements.typeSubmit.disabled = true;
+    setStatus('Typing…', 'busy');
+    jsonRequest(`/api/devices/${encodeURIComponent(udid)}/remote/action`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'type', text } satisfies RemoteAction),
+    }).then(() => {
+        setStatus('Typed', 'ready');
+        elements.typeText.value = '';
+    }).catch((error: unknown) => {
+        setStatus(errorMessage(error), 'error');
+    }).finally(() => {
+        elements.typeSubmit.disabled = false;
     });
 });
 

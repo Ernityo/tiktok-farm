@@ -13,6 +13,9 @@ const elements = {
     refresh: element('#refresh'),
     toggle: element('#toggle'),
     remoteButtons: Array.from(document.querySelectorAll('[data-remote-action]')),
+    typeForm: element('#type-form'),
+    typeText: element('#type-text'),
+    typeSubmit: element('#type-submit'),
     openPost: element('#open-post'),
     openDoomscroll: element('#open-doomscroll'),
     doomscrollDialog: element('#doomscroll-dialog'),
@@ -368,6 +371,28 @@ elements.remoteButtons.forEach((button) => {
             if (swipe)
                 void sendAction(swipe);
         }
+    });
+});
+// Types on the phone by tapping each key of the on-screen keyboard with
+// human timing, so this can take a few seconds per word.
+elements.typeForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const text = elements.typeText.value;
+    if (!text)
+        return;
+    elements.typeSubmit.disabled = true;
+    setStatus('Typing…', 'busy');
+    jsonRequest(`/api/devices/${encodeURIComponent(udid)}/remote/action`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'type', text }),
+    }).then(() => {
+        setStatus('Typed', 'ready');
+        elements.typeText.value = '';
+    }).catch((error) => {
+        setStatus(errorMessage(error), 'error');
+    }).finally(() => {
+        elements.typeSubmit.disabled = false;
     });
 });
 elements.screen.addEventListener('pointerdown', (event) => {

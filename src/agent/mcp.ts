@@ -6,12 +6,16 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 
 import { AGENT_ADAPTERS } from './adapters.js';
-import { AgentSession, type Observation, type SessionSummary } from './session.js';
+import { AgentSession, resolveDevice, type Observation, type SessionSummary } from './session.js';
 import { AGENT_APPS, type AgentApp } from './model.js';
 import type { AgentPlan } from './plan.js';
 import { PROFILES, type Personality } from '../tiktok/doomscroll-profile.js';
 import type { Niche } from '../tiktok/niche.js';
 import { SWIPE_STYLES } from '../devices/swipe-profiles.js';
+import { loadRegisteredDevices } from '../devices/registry.js';
+import { RegistryWdaRemoteControl } from '../devices/registry-remote.js';
+import { emitTouch } from '../devices/touch-events.js';
+import { MAX_TYPING_LENGTH } from '../devices/typing.js';
 
 // MCP server for agentic doomscroll (TikTok, Facebook Reels or Instagram
 // Reels), driven from an interactive Claude Code session (registered in
@@ -167,6 +171,44 @@ server.registerTool('doomscroll_stop', {
     const summary = await session.stop('stopped');
     session = undefined;
     return { content: [{ type: 'text' as const, text: summaryText(summary) }] };
+});
+
+const remotes = new RegistryWdaRemoteControl();
+
+server.registerTool('type_text', {
+    title: 'Type text on the phone',
+    description: 'Types text on the phone like a person: opens the keyboard if needed (taps the given point, else the first text field on screen), '
+        + 'then taps every key on the on-screen keyboard with human timing, switching to capitals/numbers/symbols as needed and '
+        + 'occasionally slipping onto a neighbouring key and correcting it. Works with any keyboard layout. '
+        + 'Letters that need a long-press (é on QWERTY…) are not supported. iOS autocorrect may still change words after a space.',
+    inputSchema: {
+        text: z.string().min(1).max(MAX_TYPING_LENGTH).describe('Text to type; \n presses return'),
+        wpm: z.number().min(5).max(120).optional().describe('Typing speed in words per minute (default: random 28-44)'),
+        typo_rate: z.number().min(0).max(0.3).optional().describe('Chance per letter of a corrected slip (default 0.02; 0 = never)'),
+        field_x: z.number().optional().describe('X (points) of the text field to tap if the keyboard is closed'),
+        field_y: z.number().optional().describe('Y (points) of the text field to tap if the keyboard is closed'),
+        udid: z.string().optional().describe('Device UDID; only needed when several phones are registered'),
+    },
+}, async ({ text, wpm, typo_rate, field_x, field_y, udid }) => {
+    if (session) return failure('A doomscroll session is running on the phone; call doomscroll_stop first');
+    try {
+        const device = resolveDevice(await loadRegisteredDevices(), udid);
+        const remote = await remotes.control(device.udid);
+        const field = field_x !== undefined && field_y !== undefined ? { x: field_x, y: field_y } : undefined;
+        const report = await remote.typeText(device.udid, text, {
+            field, wpm, typoRate: typo_rate,
+            onTouch: (touch) => emitTouch(touch, { udid: device.udid }),
+        });
+        const seconds = (report.durationMs / 1000).toFixed(1);
+        return {
+            content: [{
+                type: 'text' as const,
+                text: `Typed ${JSON.stringify(report.text)} in ${seconds}s (${report.keystrokes} taps, ${report.typos} corrected slip${report.typos === 1 ? '' : 's'}, ~${report.wpm} WPM including keyboard reads)`,
+            }],
+        };
+    } catch (error) {
+        return failure(error);
+    }
 });
 
 async function shutdown(): Promise<void> {
