@@ -8,6 +8,13 @@ import {
 } from '@git-agni/phone-farm-core';
 import { findHandleMatch, pointFromWord, recognizeWords, type OcrWord } from './ocr.js';
 
+// TikTok can open on a full-screen launch ad ("Passer la pub") that turns
+// into a normal in-feed ad after 2–3 s. Doing nothing for a few seconds after
+// launch lets it settle before the first screenshot, tap or swipe.
+export function appLaunchSettleMs(random: () => number = Math.random): number {
+    return Math.round(5000 + random() * 2000);
+}
+
 // Every automated tap lands a few points off-target with a variable press
 // length (see humanize.ts). `radius` caps the offset — keep it under half the
 // size of the button being tapped.

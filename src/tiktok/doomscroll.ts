@@ -5,7 +5,7 @@ import { remote, type Browser } from 'webdriverio';
 
 import { loadRegisteredDevices, resolveDeviceCoordinates, WdaRemoteControl } from '@git-agni/phone-farm-core';
 import { coordinateProfile, registeredAccounts } from './runtime-settings.js';
-import { swipeCoordinates, switchTikTokAccount, tapCoordinate } from './actions.js';
+import { appLaunchSettleMs, swipeCoordinates, switchTikTokAccount, tapCoordinate } from './actions.js';
 import { detectAd, type AdDetection } from './ad-detection.js';
 import { detectEngagementControls, type EngagementControls } from './engagement-controls.js';
 import {
@@ -188,7 +188,7 @@ try {
     });
 
     await driver.updateSettings({ defaultActiveApplication: tiktokBundleId });
-    await driver.pause(3000);
+    await driver.pause(appLaunchSettleMs()); // let a launch ad settle
 
     if (switchAccountName) {
         console.log(`Switching to TikTok account "${switchAccountName}"`);

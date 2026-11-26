@@ -8,7 +8,7 @@ import {
     activeDevices, loadRegisteredDevices, resolveDeviceCoordinates, WdaRemoteControl,
 } from '@git-agni/phone-farm-core';
 import type { RegisteredDevice } from '../devices/registry.js';
-import { swipeCoordinates, switchTikTokAccount, tapCoordinate } from './actions.js';
+import { appLaunchSettleMs, swipeCoordinates, switchTikTokAccount, tapCoordinate } from './actions.js';
 import { adFromWords, detectAdStrict, readCaptionWords, type AdDetection } from './ad-detection.js';
 import { FULL_WATCH_CAP_MS, timePlan, type AgentPlan, type TimedPlan } from './agent-plan.js';
 import { ReelWatchTracker } from '../facebook/reels-progress.js';
@@ -194,7 +194,7 @@ export class TikTokAgentSession {
         });
         try {
             await driver.updateSettings({ defaultActiveApplication: bundleId });
-            await driver.pause(3000);
+            await driver.pause(appLaunchSettleMs()); // let a launch ad settle
             const tiktok = coordinates.tiktok;
             if (account) {
                 await switchTikTokAccount(driver, remoteControl, device.udid, account, {
