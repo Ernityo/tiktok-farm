@@ -24,7 +24,7 @@ test('mutateRegisteredDevices serializes overlapping writes', async () => {
     // fire 20 concurrent independent mutations; each appends one entry
     await Promise.all(
         Array.from({ length: 20 }, (_, i) => mutateRegisteredDevices(
-            (devices) => { devices.push({ name: `d${i}`, udid: `udid-${i}`, pluginData: {} }); },
+            (devices) => { devices.push({ name: `d${i}`, udid: `udid-${i}`, wdaRemotePort: 21000 + i * 2, mjpegRemotePort: 21001 + i * 2, pluginData: {} }); },
             configPath,
         )),
     );

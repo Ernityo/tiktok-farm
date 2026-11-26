@@ -20,7 +20,7 @@ test('saveRegisteredDevices only keeps disabled when it is exactly true', async 
     const configPath = path.join(directory, 'devices.json');
     await saveRegisteredDevices([
         { name: 'On', udid: 'on', disabled: false as unknown as undefined, pluginData: {} },
-        { name: 'Off', udid: 'off', disabled: true, pluginData: {} },
+        { name: 'Off', udid: 'off', disabled: true, wdaRemotePort: 21490, mjpegRemotePort: 21491, pluginData: {} },
     ], configPath);
     const saved = JSON.parse(await readFile(configPath, 'utf8')) as Array<{ udid: string; disabled?: boolean }>;
     assert.equal(saved.find((d) => d.udid === 'on')!.disabled, undefined);

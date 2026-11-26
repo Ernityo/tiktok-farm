@@ -9,7 +9,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 
 import { discoverConnectedDevices } from '../devices/discovery.js';
-import { loadRegisteredDevices, mutateRegisteredDevices, saveRegisteredDevices, redactDevice, PASSCODE_PATTERN, type RegisteredDevice } from '../devices/registry.js';
+import { loadRegisteredDevices, mutateRegisteredDevices, saveRegisteredDevices, redactDevice, validatePhonePorts, PASSCODE_PATTERN, type RegisteredDevice } from '../devices/registry.js';
 import {
     CALIBRATABLE_POINTS, POINT_LABELS, coordinatesForProfile, resolveDeviceCoordinates, validateCoordinateOverrides,
 } from '../devices/coordinates.js';
@@ -61,6 +61,15 @@ function errorMessage(error: unknown): string {
 /** Thrown inside route bodies / registry mutations; mapped to its status by setErrorHandler. */
 function httpError(statusCode: number, message: string): Error & { statusCode: number } {
     return Object.assign(new Error(message), { statusCode });
+}
+
+/** Rejects a device write with 400 (not 500) when it would leave two phones sharing an in-phone port. */
+function assertPhonePorts(devices: readonly RegisteredDevice[]): void {
+    try {
+        validatePhonePorts(devices);
+    } catch (error) {
+        throw httpError(400, error instanceof Error ? error.message : String(error));
+    }
 }
 
 function csrfBlocked(reply: FastifyReply): FastifyReply {
@@ -293,6 +302,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
                     ...(passcode !== undefined ? { passcode } : {}),
                 };
                 devices.push(device);
+                assertPhonePorts(devices);
                 return device;
             });
             return reply.code(201).send(redactDevice(created));
@@ -328,6 +338,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
                     if (Object.keys(overrides).length === 0) delete device.coordinates;
                     else device.coordinates = overrides;
                 }
+                assertPhonePorts(devices);
                 return device;
             });
             remote.forget(request.params.udid);
