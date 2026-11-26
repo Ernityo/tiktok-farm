@@ -8,6 +8,7 @@ import { swipeCoordinates, tapCoordinate } from './actions.js';
 import { ensureTikTokAccount } from './account.js';
 import { detectAdStrict } from './ad-detection.js';
 import { detectEngagementControls } from './engagement-controls.js';
+import { followFromProfile } from './creator-profile.js';
 import { detectFollowPlus } from './follow-button.js';
 import { normalizeHandle } from './niche.js';
 import { registeredAccounts, TIKTOK_PLUGIN_ID } from './runtime-settings.js';
@@ -45,10 +46,20 @@ export const tiktokAdapter: AgentAppAdapter = {
         return ensureTikTokAccount(context, account);
     },
 
-    // The red + under the creator's avatar, above the heart. Following from
-    // the profile isn't mapped yet.
-    followModes: ['plus'],
-    async follow(context) {
+    // The red + under the creator's avatar, above the heart; or the creator's
+    // profile (src/tiktok/creator-profile.ts): Suivre, one or two of their videos, back.
+    followModes: ['plus', 'profile'],
+    async follow(context, how) {
+        if (how === 'profile') {
+            return followFromProfile(context, {
+                railVisible: async () => (await railNow(context)).controls !== undefined,
+                // Quicker and longer than the feed's fixed swipe: a 450 ms one didn't move this player.
+                swipeUp: async () => {
+                    const x = Math.round(context.window.width / 2);
+                    await swipeCoordinates(context.driver, { x, y: Math.round(context.window.height * 0.78) }, { x, y: Math.round(context.window.height * 0.22) }, 300);
+                },
+            });
+        }
         const started = Date.now();
         const before = await railNow(context);
         if (!before.controls) throw new Error('the right rail was not found');
