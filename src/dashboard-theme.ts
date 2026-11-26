@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url';
 
 import type { DashboardTheme } from './api/app.js';
 import type { RegisteredDevice } from './devices/registry.js';
+import { accountNiches } from './tiktok/niche.js';
 
 const pluginId = 'com.git-agni.tiktok';
 
@@ -22,6 +23,9 @@ export const defaultDashboardTheme: DashboardTheme = {
         const options = configured.map((account) => `<option value="${escapeHtml(account)}">${escapeHtml(account)}</option>`).join('');
         return template.replaceAll('__TIKTOK_ACCOUNT_OPTIONS__', options)
             .replaceAll('__TIKTOK_ACCOUNTS_VALUE__', escapeHtml(configured.join(', ')))
+            // Inside a <script type="application/json">: escaping "<" keeps a
+            // niche containing "</script>" from closing the tag.
+            .replaceAll('__TIKTOK_NICHES_JSON__', JSON.stringify(accountNiches(device)).replaceAll('<', '\\u003c'))
             .replaceAll('__DEVICE_HASPASSCODE__', device.passcode ? '· set' : '· not set');
     },
 };

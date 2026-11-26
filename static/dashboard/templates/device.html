@@ -19,6 +19,7 @@
                 <a class="crumb" href="/tasks">Tasks</a>
                 <button id="open-tasks" class="button secondary" type="button">Tasks &amp; schedules</button>
                 <button id="open-accounts" class="button secondary" type="button">Accounts</button>
+                <button id="open-niches" class="button secondary" type="button">Niches</button>
                 <button id="open-passcode" class="button secondary" type="button">Passcode</button>
                 <button id="open-calibrate" class="button secondary" type="button">Touch points</button>
                 <button id="open-remove" class="button danger" type="button">Remove device</button>
@@ -125,6 +126,29 @@
             <div class="form-actions"><span id="accounts-result" class="run-meta" aria-live="polite"></span><span class="spacer"></span><button class="button primary" type="submit">Save accounts</button></div>
         </form>
     </dialog>
+    <dialog id="niches-dialog">
+        <form id="niches-form" class="modal">
+            <div class="modal-head">
+                <div><span class="eyebrow">TikTok</span><h2>Account niches</h2></div>
+                <button id="close-niches" class="icon-button" type="button">Close</button>
+            </div>
+            <p>What each account's feed should be about. Agentic doomscroll watches, likes and saves on-niche videos and skips the rest.</p>
+            <label for="niche-account">Account</label>
+            <select id="niche-account"></select>
+            <label for="niche-description">Niche description</label>
+            <textarea id="niche-description" maxlength="1000" placeholder="Home calisthenics for beginners: bodyweight exercises, pull-up bars, park workouts"></textarea>
+            <label for="niche-keywords">Keywords <span class="field-help">Comma-separated words or hashtags that usually mean on-niche.</span></label>
+            <input id="niche-keywords" type="text" placeholder="calisthenics, pull up, #streetworkout">
+            <label for="niche-avoid">Avoid <span class="field-help">Comma-separated topics to skip even if they look close.</span></label>
+            <input id="niche-avoid" type="text" placeholder="gym prank, dance">
+            <div class="form-actions">
+                <span id="niches-result" class="run-meta" aria-live="polite"></span><span class="spacer"></span>
+                <button id="niche-clear" class="button secondary" type="button">Clear niche</button>
+                <button class="button primary" type="submit">Save niche</button>
+            </div>
+        </form>
+    </dialog>
+    <script type="application/json" id="tiktok-niches">__TIKTOK_NICHES_JSON__</script>
     <dialog id="passcode-dialog">
         <form id="passcode-form" class="modal" autocomplete="off">
             <div class="modal-head">

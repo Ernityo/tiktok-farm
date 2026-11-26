@@ -1,6 +1,6 @@
 import sharp from 'sharp';
 
-import { recognizeWords } from './ocr.js';
+import { recognizeWords, type OcrWord } from './ocr.js';
 
 export interface AdDetection {
     isAd: boolean;
@@ -57,12 +57,29 @@ async function whiteTextImage(screenshot: Buffer, threshold: number): Promise<Bu
         .toBuffer();
 }
 
+/** OCRs the white text of the caption area (handle, caption, hashtags, sound, ad label). */
+export async function readCaptionWords(screenshot: Buffer, threshold = WHITE_THRESHOLDS[0]!): Promise<OcrWord[]> {
+    return recognizeWords(await whiteTextImage(screenshot, threshold));
+}
+
+export function adFromWords(words: readonly OcrWord[]): AdDetection {
+    const match = words.find((word) => isAdLabel(word.text));
+    return match ? { isAd: true, label: match.text } : { isAd: false };
+}
+
 /** Reads the caption area of a TikTok feed screenshot for an ad label. */
 export async function detectAd(screenshot: Buffer): Promise<AdDetection> {
     for (const threshold of WHITE_THRESHOLDS) {
-        const words = await recognizeWords(await whiteTextImage(screenshot, threshold));
-        const match = words.find((word) => isAdLabel(word.text));
-        if (match) return { isAd: true, label: match.text };
+        const result = adFromWords(await readCaptionWords(screenshot, threshold));
+        if (result.isAd) return result;
     }
     return { isAd: false };
+}
+
+/**
+ * The stricter second pass of detectAd, for callers that already ran the
+ * first one through readCaptionWords.
+ */
+export async function detectAdStrict(screenshot: Buffer): Promise<AdDetection> {
+    return adFromWords(await readCaptionWords(screenshot, WHITE_THRESHOLDS[1]!));
 }

@@ -66,6 +66,16 @@ const elements = {
     accountsDialog: element('#accounts-dialog'),
     openAccounts: element('#open-accounts'),
     closeAccounts: element('#close-accounts'),
+    nichesDialog: element('#niches-dialog'),
+    nichesForm: element('#niches-form'),
+    openNiches: element('#open-niches'),
+    closeNiches: element('#close-niches'),
+    nicheAccount: element('#niche-account'),
+    nicheDescription: element('#niche-description'),
+    nicheKeywords: element('#niche-keywords'),
+    nicheAvoid: element('#niche-avoid'),
+    nicheClear: element('#niche-clear'),
+    nichesResult: element('#niches-result'),
     passcodeDialog: element('#passcode-dialog'),
     openPasscode: element('#open-passcode'),
     closePasscode: element('#close-passcode'),
@@ -797,6 +807,12 @@ elements.accountsForm.addEventListener('submit', async (event) => {
         }
         if (result.accounts.includes(previousDoomscroll))
             doomscrollAccount.value = previousDoomscroll;
+        // The server drops the niches of removed accounts; mirror that here.
+        for (const handle of Object.keys(niches))
+            if (!result.accounts.includes(handle))
+                delete niches[handle];
+        nicheAccounts = result.accounts;
+        renderNicheAccounts();
         elements.deviceAccounts.value = result.accounts.join(', ');
         elements.accountsResult.textContent = result.accounts.length ? 'Accounts saved.' : 'Account switching is optional.';
     }
@@ -804,6 +820,75 @@ elements.accountsForm.addEventListener('submit', async (event) => {
         elements.accountsResult.textContent = errorMessage(error);
     }
 });
+function readNiches() {
+    try {
+        const parsed = JSON.parse(document.querySelector('#tiktok-niches')?.textContent ?? '{}');
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    }
+    catch {
+        return {};
+    }
+}
+const niches = readNiches();
+let nicheAccounts = elements.deviceAccounts.value.split(',').map((value) => value.trim()).filter(Boolean);
+function showNiche() {
+    const niche = niches[elements.nicheAccount.value];
+    elements.nicheDescription.value = niche?.description ?? '';
+    elements.nicheKeywords.value = niche?.keywords.join(', ') ?? '';
+    elements.nicheAvoid.value = niche?.avoid.join(', ') ?? '';
+    elements.nichesResult.textContent = '';
+}
+function renderNicheAccounts() {
+    const previous = elements.nicheAccount.value;
+    elements.nicheAccount.replaceChildren(...nicheAccounts.map((account) => new Option(niches[account] ? account : `${account} (no niche)`, account)));
+    if (nicheAccounts.includes(previous))
+        elements.nicheAccount.value = previous;
+    const disabled = nicheAccounts.length === 0;
+    for (const control of [elements.nicheAccount, elements.nicheDescription, elements.nicheKeywords, elements.nicheAvoid, elements.nicheClear]) {
+        control.disabled = disabled;
+    }
+    showNiche();
+    if (disabled)
+        elements.nichesResult.textContent = 'Add TikTok accounts first (Accounts button).';
+}
+async function saveNiche(niche) {
+    const account = elements.nicheAccount.value;
+    if (!account)
+        return;
+    elements.nichesResult.textContent = 'Saving…';
+    try {
+        const result = await jsonRequest(`/api/devices/${encodeURIComponent(udid)}/tiktok/niches`, {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ account, niche }),
+        });
+        if (result.niche)
+            niches[account] = result.niche;
+        else
+            delete niches[account];
+        renderNicheAccounts();
+        elements.nichesResult.textContent = result.niche ? 'Niche saved.' : 'Niche cleared.';
+    }
+    catch (error) {
+        elements.nichesResult.textContent = errorMessage(error);
+    }
+}
+const commaList = (value) => value.split(',').map((entry) => entry.trim()).filter(Boolean);
+elements.nicheAccount.addEventListener('change', showNiche);
+elements.nichesForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    void saveNiche({
+        description: elements.nicheDescription.value.trim(),
+        keywords: commaList(elements.nicheKeywords.value),
+        avoid: commaList(elements.nicheAvoid.value),
+    });
+});
+elements.nicheClear.addEventListener('click', () => void saveNiche(null));
+elements.openNiches.addEventListener('click', () => {
+    renderNicheAccounts();
+    elements.nichesDialog.showModal();
+});
+elements.closeNiches.addEventListener('click', () => elements.nichesDialog.close());
 const cal = {
     screen: undefined,
     points: [],

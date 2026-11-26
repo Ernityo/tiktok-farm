@@ -7,6 +7,7 @@ import { pipeline } from 'node:stream/promises';
 
 import type { PhoneFarmPlugin, TaskDefinition, TaskExecutionContext } from './plugin.js';
 import type { JsonObject, JsonValue, ScheduleTiming } from './types.js';
+import { accountNiches, nichesToJson, normalizeHandle, parseNiche, pruneNiches } from './tiktok/niche.js';
 
 export interface TikTokPluginConfiguration {
     doomscrollEntrypoint?: string;
@@ -172,12 +173,47 @@ export function createTikTokPlugin(configuration: TikTokPluginConfiguration = {}
                 const found = await context.mutateDevices((devices) => {
                     const device = devices.find(({ udid }) => udid === request.params.udid);
                     if (!device) return false;
-                    device.pluginData = { ...device.pluginData, 'com.git-agni.tiktok': { ...device.pluginData['com.git-agni.tiktok'], accounts } };
+                    // A removed account takes its niche with it.
+                    const niches = nichesToJson(pruneNiches(accountNiches(device), accounts));
+                    device.pluginData = { ...device.pluginData, 'com.git-agni.tiktok': { ...device.pluginData['com.git-agni.tiktok'], accounts, niches } };
                     return true;
                 });
                 if (!found) return reply.code(404).send({ error: 'Device is not registered' });
                 return { accounts };
             });
+
+            // Sets (or, with `niche: null`, clears) the niche of one account
+            // on this device. Agentic doomscroll reads it to judge each video.
+            context.app.put<{ Params: { udid: string }; Body: { account?: unknown; niche?: unknown } }>(
+                '/api/devices/:udid/tiktok/niches', async (request, reply) => {
+                    const body = request.body ?? {};
+                    if (typeof body.account !== 'string' || !body.account.trim()) return reply.code(400).send({ error: 'Choose an account' });
+                    const account = normalizeHandle(body.account);
+                    let niche: ReturnType<typeof parseNiche> | null = null;
+                    if (body.niche !== null) {
+                        try {
+                            niche = parseNiche(body.niche as JsonValue);
+                        } catch (error) {
+                            return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+                        }
+                    }
+                    const outcome = await context.mutateDevices((devices) => {
+                        const device = devices.find(({ udid }) => udid === request.params.udid);
+                        if (!device) return 'missing-device' as const;
+                        const settings = device.pluginData['com.git-agni.tiktok'] ?? {};
+                        const accounts = Array.isArray(settings.accounts) ? settings.accounts.filter((value): value is string => typeof value === 'string') : [];
+                        if (!accounts.map(normalizeHandle).includes(account)) return 'missing-account' as const;
+                        const niches = accountNiches(device);
+                        if (niche) niches[account] = niche;
+                        else delete niches[account];
+                        device.pluginData = { ...device.pluginData, 'com.git-agni.tiktok': { ...settings, niches: nichesToJson(niches) } };
+                        return 'saved' as const;
+                    });
+                    if (outcome === 'missing-device') return reply.code(404).send({ error: 'Device is not registered' });
+                    if (outcome === 'missing-account') return reply.code(400).send({ error: `${account} is not one of this device's TikTok accounts` });
+                    return { account, niche };
+                },
+            );
 
             context.app.post<{ Params: { udid: string }; Body: Record<string, string> }>(
                 '/api/devices/:udid/fragments/scroll-run', async (request, reply) => {

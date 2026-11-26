@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "tiktok-agent": {
+      "command": "npm",
+      "args": ["run", "--silent", "agent:mcp"]
+    }
+  }
+}
