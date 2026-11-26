@@ -197,14 +197,17 @@ export function median(values: readonly number[]): number | undefined {
 }
 
 /**
- * Whether a swipe left the same video on screen: same id when the app
- * exposes one, else the same OCR'd caption.
+ * Whether a swipe left the same video on screen: the same OCR'd caption.
+ * A different id proves the feed moved, but the same id doesn't prove it
+ * didn't: Instagram's id names the creator ("Reel de x."), not the Reel.
+ * Two parts of a series with near-identical captions still look the same:
+ * that costs one extra swipe.
  */
 export function feedDidNotMove(
     before: { caption: string; reelId?: string | undefined },
     after: { caption: string; reelId?: string | undefined },
 ): boolean {
-    if (before.reelId && after.reelId) return before.reelId === after.reelId;
+    if (before.reelId && after.reelId && before.reelId !== after.reelId) return false;
     return sameCaption(before.caption, after.caption);
 }
 
@@ -308,8 +311,10 @@ export class AgentSession {
         try {
             await driver.updateSettings({ defaultActiveApplication: adapter.bundleId });
             await driver.pause(appLaunchSettleMs()); // let a launch ad settle
-            const { scale } = await remoteControl.getScreenInfo(device.udid);
-            const window = await driver.getWindowRect();
+            // From WDA, not driver.getWindowRect(): that looks up the app element,
+            // which hangs on TikTok's constantly updating feed.
+            const { scale, screenSize } = await remoteControl.getScreenInfo(device.udid);
+            const window = { width: screenSize.width, height: screenSize.height };
             const context: AppContext = {
                 driver, remoteControl, device, coordinates, scale, window,
                 screenshot: () => remoteControl.getScreenshot(device.udid),

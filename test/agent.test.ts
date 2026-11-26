@@ -183,14 +183,18 @@ test('swipeRecord logs where the finger went and the upward distance', () => {
     });
 });
 
-test('feedDidNotMove prefers the app\'s video id over the caption', () => {
+test('feedDidNotMove compares captions; a different id means the feed moved', () => {
     const caption = 'creator name morning routine gym motivation leg day';
     assert.equal(feedDidNotMove({ caption }, { caption }), true);
     assert.equal(feedDidNotMove({ caption }, { caption: 'another person cooking pasta dinner recipe tonight' }), false);
-    // Same caption but a different Reel (a creator's series): moved on.
-    assert.equal(feedDidNotMove({ caption, reelId: 'a' }, { caption, reelId: 'b' }), false);
-    // Different OCR noise on the same Reel: didn't move.
-    assert.equal(feedDidNotMove({ caption, reelId: 'a' }, { caption: 'x', reelId: 'a' }), true);
+    // Same caption but another id: moved on.
+    assert.equal(feedDidNotMove({ caption, reelId: 'Reel de a.' }, { caption, reelId: 'Reel de b.' }), false);
+    // Instagram ids name the creator: the next part of a series has the same id but a new caption.
+    assert.equal(feedDidNotMove(
+        { caption: 'htmfr_d Suivre THE MASK Partie 3 #ia #aistory', reelId: 'Reel de htmfr_d.' },
+        { caption: 'htmfr_d Suivre Le roi perd sa couronne dans la forêt enchantée #fantasy', reelId: 'Reel de htmfr_d.' },
+    ), false);
+    assert.equal(feedDidNotMove({ caption, reelId: 'Reel de a.' }, { caption, reelId: 'Reel de a.' }), true);
     // Too little text to tell (cards): moved on.
     assert.equal(feedDidNotMove({ caption: 'Suivre' }, { caption: 'Suivre' }), false);
 });
