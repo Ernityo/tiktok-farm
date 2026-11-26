@@ -16,6 +16,8 @@ export interface AgentPlan {
     save?: boolean;
     /** Text to leave as a comment (apps that support it). Undefined/null = no comment. */
     comment?: string | null;
+    /** Follow the creator after watching (warm-up sessions that follow). */
+    follow?: boolean;
 }
 
 export interface TimedPlan {

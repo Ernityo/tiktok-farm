@@ -2,16 +2,27 @@
 // straight on the For You feed; the heart/bookmark rail and the progress bar
 // are read from screenshots, and ads get a second, stricter OCR pass.
 
+import { AppStuckError } from '../agent/comment.js';
 import type { AgentAppAdapter, AppContext } from '../agent/session.js';
-import { swipeCoordinates } from './actions.js';
+import { swipeCoordinates, tapCoordinate } from './actions.js';
 import { ensureTikTokAccount } from './account.js';
 import { detectAdStrict } from './ad-detection.js';
 import { detectEngagementControls } from './engagement-controls.js';
+import { detectFollowPlus } from './follow-button.js';
 import { normalizeHandle } from './niche.js';
 import { registeredAccounts, TIKTOK_PLUGIN_ID } from './runtime-settings.js';
 import { readTikTokProgress } from './video-progress.js';
 
 const layout = (context: AppContext) => context.coordinates.tiktok;
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+async function railNow(context: AppContext) {
+    const screenshot = await context.screenshot();
+    const controls = await detectEngagementControls(screenshot, context.scale, {
+        expectedGapPt: layout(context).save.y - layout(context).like.y,
+    });
+    return { screenshot, controls };
+}
 
 export const tiktokAdapter: AgentAppAdapter = {
     app: 'tiktok',
@@ -32,6 +43,29 @@ export const tiktokAdapter: AgentAppAdapter = {
     // Profile tab → read the handle → switch if needed → back to For You.
     async ensureAccount(context, account) {
         return ensureTikTokAccount(context, account);
+    },
+
+    // The red + under the creator's avatar, above the heart. Following from
+    // the profile isn't mapped yet.
+    followModes: ['plus'],
+    async follow(context) {
+        const started = Date.now();
+        const before = await railNow(context);
+        if (!before.controls) throw new Error('the right rail was not found');
+        const plus = await detectFollowPlus(before.screenshot, context.scale, before.controls.like);
+        if (!plus) throw new Error('no Follow + on the avatar (already following?)');
+        await tapCoordinate(context.driver, plus.x, plus.y, 'Follow +', { radius: 3 });
+        // The + turns into a tick, then disappears.
+        await sleep(1200 + Math.random() * 800);
+        let after = await railNow(context);
+        if (!after.controls) {
+            // A tap on the avatar instead opens the profile; or the rail just flickered.
+            await sleep(1000);
+            after = await railNow(context);
+            if (!after.controls) throw new AppStuckError('Left the feed after tapping the Follow + (profile opened?)');
+        }
+        const still = await detectFollowPlus(after.screenshot, context.scale, after.controls.like);
+        return { verified: !still, durationMs: Date.now() - started };
     },
 
     async strictAd(screenshot) {

@@ -65,15 +65,54 @@ export function commentRules(niche: Niche, language: string): string[] {
     ];
 }
 
-export function systemPrompt(niche: Niche, personality: Personality, language = 'French', app: AgentApp = 'tiktok'): string {
+/**
+ * What a session teaches the feed: the account's niche, or (first warm-up
+ * phase) who the person is, from the niche's persona.
+ */
+export type ScrollGoal = 'niche' | 'persona';
+
+export interface PromptOptions {
+    goal?: ScrollGoal;
+    /** The session follows creators (warm-up): the reply gets a "follow" field. */
+    follows?: boolean;
+    /** Never ask for comments, even on apps that can comment (warm-up). */
+    noComments?: boolean;
+}
+
+/** Throws when the niche can't drive a session with this goal. */
+export function assertGoalFits(niche: Niche, goal: ScrollGoal): void {
+    if (goal === 'persona' && !niche.persona) {
+        throw new Error('The persona warm-up phase needs a persona: add one to the account\'s niche (device page → Niches)');
+    }
+}
+
+export function systemPrompt(
+    niche: Niche, personality: Personality, language = 'French', app: AgentApp = 'tiktok', options: PromptOptions = {},
+): string {
     const wording = APP_PROMPTS[app];
+    const goal = options.goal ?? 'niche';
+    assertGoalFits(niche, goal);
+    const canComment = wording.canComment && !options.noComments;
     const fields = [
         '"foreign": true|false, "on_niche": 0..1, "watch": "skip"|"short"|"full", "like": true|false',
         ...(wording.canSave ? ['"save": true|false'] : []),
-        ...(wording.canComment ? ['"comment": "text"|null'] : []),
+        ...(options.follows ? ['"follow": true|false'] : []),
+        ...(canComment ? ['"comment": "text"|null'] : []),
     ];
+    const teaching = goal === 'persona'
+        ? 'teaching its algorithm who this person is: the everyday things they would genuinely enjoy watching'
+        : 'teaching its algorithm a niche';
+    const target = goal === 'persona'
+        ? [
+            'niche (for now): whatever this person would enjoy day to day. Judge loosely: a real person has several broad',
+            `interests (their age, job, city, hobbies, humour, food...), not one topic. The person: ${niche.persona}`,
+        ]
+        : [
+            `niche: ${niche.description}`,
+            niche.keywords.length ? `keywords: ${niche.keywords.join(', ')}` : '',
+        ];
     return [
-        `You scroll a ${wording.feed} for one account (a ${personality} viewer), teaching its algorithm a niche.`,
+        `You scroll a ${wording.feed} for one account (a ${personality} viewer), ${teaching}.`,
         'For each video you get a screenshot, a full-resolution crop of its caption area, and noisy OCR caption text. Reply with JSON only:',
         `{${fields.join(', ')}}`,
         ...wording.foreign(language),
@@ -89,10 +128,16 @@ export function systemPrompt(niche: Niche, personality: Personality, language = 
                 '- like: only on "full" videos. Each video shows likes done vs allowed: when below the allowance, like a',
                 '  clearly on-niche video; at the allowance, do not like.',
             ]),
-        ...(wording.canComment ? commentRules(niche, language) : []),
+        ...(options.follows
+            ? [
+                '- follow: only on a "full" video, and only when the video shows follows done vs allowed with some left',
+                '  (no follows line: false). Then true when the creator clearly posts this kind of video, someone this',
+                '  account would follow. Never follow ads, shops or brands.',
+            ]
+            : []),
+        ...(canComment ? commentRules(niche, language) : []),
         'The image wins when it disagrees with the OCR text. Anything matching "avoid" is a skip.',
-        `niche: ${niche.description}`,
-        niche.keywords.length ? `keywords: ${niche.keywords.join(', ')}` : '',
+        ...target,
         niche.avoid.length ? `avoid: ${niche.avoid.join(', ')}` : '',
     ].filter(Boolean).join('\n');
 }
@@ -109,6 +154,7 @@ export function userText(observation: DecisionInput): string {
             ...(e.savesAllowed > 0 ? [`saves ${e.saves}/${e.savesAllowed} allowed`] : []),
             // Only shown while one is left, so the model isn't tempted otherwise.
             ...((e.commentsAllowed ?? 0) > (e.comments ?? 0) ? [`comments ${e.comments ?? 0}/${e.commentsAllowed} allowed`] : []),
+            ...((e.followsAllowed ?? 0) > (e.follows ?? 0) ? [`follows ${e.follows ?? 0}/${e.followsAllowed} allowed`] : []),
         ].join(' · '),
         observation.caption ? `caption (OCR, noisy): ${observation.caption}` : 'caption: (none read)',
     ].join('\n');
@@ -121,6 +167,7 @@ const Reply = z.object({
     like: z.boolean().optional().catch(false),
     save: z.boolean().optional().catch(false),
     comment: z.string().nullable().optional().catch(null),
+    follow: z.boolean().optional().catch(false),
 });
 
 /**
@@ -140,6 +187,7 @@ export function parseReply(text: string, random: () => number = Math.random): { 
             likeAtMs: engaged && reply.like ? Math.round(2000 + random() * 10_000) : null,
             save: engaged && reply.save === true,
             ...(engaged && reply.comment ? { comment: reply.comment } : {}),
+            ...(engaged && reply.follow === true ? { follow: true } : {}),
         },
         foreign,
     };

@@ -18,16 +18,14 @@
 
 import { parseArgs } from 'node:util';
 
-import { AGENT_APPS, DEFAULT_AGENT_MODEL, OpenRouterDecider, systemPrompt, type AgentApp, type ModelDecision } from './model.js';
-import type { AgentPlan } from './plan.js';
+import { AGENT_APPS, DEFAULT_AGENT_MODEL, OpenRouterDecider, systemPrompt, type AgentApp } from './model.js';
 import type { Personality } from '../tiktok/doomscroll-profile.js';
 import { SWIPE_STYLES, type SwipeStyle } from '../devices/swipe-profiles.js';
 import { AGENT_ADAPTERS } from './adapters.js';
-import { AgentSession, type Observation, type SessionSummary } from './session.js';
+import { runSession } from './loop.js';
+import { AgentSession } from './session.js';
 
 const PERSONALITIES: readonly Personality[] = ['skimmer', 'casual', 'engaged'];
-/** Consecutive model failures before the session is stopped. */
-const MAX_MODEL_FAILURES = 3;
 
 const { values } = parseArgs({
     options: {
@@ -57,19 +55,6 @@ const apiKey = process.env.OPENROUTER_API_KEY;
 if (!apiKey) throw new Error('Set OPENROUTER_API_KEY in .env');
 const model = process.env.AGENT_MODEL || DEFAULT_AGENT_MODEL;
 
-async function decide(decider: OpenRouterDecider, observation: Observation): Promise<ModelDecision> {
-    try {
-        return await decider.decide(observation);
-    } catch (first) {
-        console.log(`[scroll] model call failed, retrying: ${first instanceof Error ? first.message : String(first)}`);
-        return decider.decide(observation);
-    }
-}
-
-function describe(plan: AgentPlan): string {
-    return `${plan.watch.padEnd(5)} ${plan.onNiche.toFixed(2)}${plan.likeAtMs ? ' like' : ''}${plan.save ? ' save' : ''}${plan.comment ? ` comment ${JSON.stringify(plan.comment)}` : ''}`;
-}
-
 const startOptions = {
     minutes,
     personality,
@@ -88,42 +73,10 @@ process.once('SIGINT', () => {
     console.log('\n[scroll] stopping after this video…');
 });
 
-let observation: Observation = first;
-let failures = 0;
-let summary: SessionSummary | undefined;
-try {
-    while (!summary) {
-        if (stopping) {
-            summary = await session.stop('stopped');
-            break;
-        }
-        const skipReason = observation.autoSkip;
-        let plan: AgentPlan;
-        let extra: Record<string, unknown>;
-        if (skipReason) {
-            plan = { onNiche: 0, watch: 'skip', likeAtMs: null, save: false };
-            extra = { auto: skipReason };
-        } else {
-            try {
-                const decision = await decide(decider, observation);
-                failures = 0;
-                plan = decision.plan;
-                extra = { model, modelMs: decision.ms, provider: decision.provider, ...(decision.foreign ? { foreign: true } : {}) };
-            } catch (error) {
-                failures += 1;
-                if (failures >= MAX_MODEL_FAILURES) throw error;
-                console.log(`[scroll] model failed twice, skipping this video: ${error instanceof Error ? error.message : String(error)}`);
-                plan = { onNiche: 0, watch: 'skip', likeAtMs: null, save: false };
-                extra = { auto: 'model-error' };
-            }
-        }
-        console.log(`[scroll] #${String(observation.video).padStart(3)} ${describe(plan)}  ${skipReason ? `(auto: ${skipReason})` : `(${String(extra.modelMs)} ms${extra.foreign ? ', not in language' : ''})`}  ${observation.caption.slice(0, 70)}`);
-        const result = await session.step(plan, extra);
-        if ('summary' in result) summary = result.summary;
-        else observation = result.observation;
-    }
-} catch (error) {
-    summary = await session.stop('error');
+const { summary, error } = await runSession(session, first, decider, {
+    model, shouldStop: () => stopping, log: (line) => console.log(`[scroll] ${line}`),
+});
+if (error) {
     console.error(`[scroll] ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
 }

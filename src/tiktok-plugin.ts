@@ -7,10 +7,15 @@ import { pipeline } from 'node:stream/promises';
 
 import type { PhoneFarmPlugin, TaskDefinition, TaskExecutionContext } from './plugin.js';
 import type { JsonObject, JsonValue, ScheduleTiming } from './types.js';
-import { accountNiches, nichesToJson, normalizeHandle, parseNiche, pruneNiches } from './tiktok/niche.js';
+import { accountNiches, nicheForAccount, nichesToJson, normalizeHandle, parseNiche, pruneNiches } from './tiktok/niche.js';
+import {
+    accountWarmups, pruneWarmups, WARMUP_PLAN, warmupDay, warmupPhase, warmupStartDate, warmupsToJson,
+} from './tiktok/warmup.js';
+import { dailyFeedShare, warmupRuns } from './tiktok/warmup-history.js';
 
 export interface TikTokPluginConfiguration {
     doomscrollEntrypoint?: string;
+    warmupEntrypoint?: string;
     postEntrypoint?: string;
     bundleId?: string;
 }
@@ -22,6 +27,15 @@ type DoomscrollPayload = JsonObject & {
     saveEnabled: boolean;
     account?: string;
 };
+
+type WarmupPayload = JsonObject & {
+    account: string;
+    durationMinutes: number;
+    personality: 'skimmer' | 'casual' | 'engaged';
+};
+
+const WARMUP_TASK = { pluginId: 'com.git-agni.tiktok', taskType: 'warmup', taskVersion: 1 } as const;
+const LOCAL_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 type PostMedia = JsonObject & {
     assetId: string;
@@ -85,6 +99,43 @@ function createDoomscrollTask(configuration: TikTokPluginConfiguration): TaskDef
                 DOOMSCROLL_LIKE_ENABLED: String(payload.likeEnabled),
                 DOOMSCROLL_SAVE_ENABLED: String(payload.saveEnabled),
                 ...(payload.account ? { TIKTOK_SWITCH_ACCOUNT: payload.account } : {}),
+            },
+        }),
+    };
+}
+
+/**
+ * One agentic warm-up session (src/agent/warmup.ts): the account's warm-up
+ * day picks the phase (persona, then niche with a daily search). Scheduled
+ * three times a day per account from the device page.
+ */
+function createWarmupTask(configuration: TikTokPluginConfiguration): TaskDefinition<WarmupPayload> {
+    return {
+        type: 'warmup', version: 1, displayName: 'TikTok warm-up',
+        validate(value) {
+            const input = objectPayload(value);
+            if (typeof input.account !== 'string' || !/^@?[A-Za-z0-9._]{1,64}$/.test(input.account.trim())) throw new Error('Choose a TikTok account');
+            const durationMinutes = input.durationMinutes ?? 10;
+            if (typeof durationMinutes !== 'number' || !Number.isInteger(durationMinutes) || durationMinutes < 3 || durationMinutes > 30) {
+                throw new Error('durationMinutes must be between 3 and 30');
+            }
+            const personality = input.personality ?? 'casual';
+            if (personality !== 'skimmer' && personality !== 'casual' && personality !== 'engaged') throw new Error('Invalid personality');
+            return { account: normalizeHandle(input.account), durationMinutes, personality };
+        },
+        summarize: (payload) => `Warm-up · ${payload.account} · ${payload.durationMinutes} min`,
+        // Sessions run up to 15% long, plus the account check and a search.
+        estimateDurationMs: (payload) => Math.round(payload.durationMinutes * 60_000 * 1.15) + 60_000,
+        retryPolicy: () => ({ retryLimit: 1, retryDelaySeconds: 120, retryBackoff: false }),
+        supportsStop: () => true,
+        execute: (context, payload) => context.runProcess({
+            entrypoint: configuration.warmupEntrypoint ?? fileURLToPath(new URL('./agent/warmup.ts', import.meta.url)),
+            env: {
+                IOS_UDID: context.device.udid,
+                TIKTOK_BUNDLE_ID: configuration.bundleId ?? 'com.zhiliaoapp.musically',
+                WARMUP_ACCOUNT: payload.account,
+                WARMUP_MINUTES: String(payload.durationMinutes),
+                WARMUP_PERSONALITY: payload.personality,
             },
         }),
     };
@@ -156,7 +207,7 @@ export function createTikTokPlugin(configuration: TikTokPluginConfiguration = {}
         id: 'com.git-agni.tiktok',
         version: '0.1.0',
         displayName: 'TikTok automation',
-        tasks: [createDoomscrollTask(configuration), createPostTask(configuration)],
+        tasks: [createDoomscrollTask(configuration), createPostTask(configuration), createWarmupTask(configuration)],
         devicePanels: [{
             id: 'tiktok-controls', title: 'TikTok',
             fragmentPath: fileURLToPath(new URL('../static/tiktok/device-panel.html', import.meta.url)), order: 100,
@@ -173,9 +224,12 @@ export function createTikTokPlugin(configuration: TikTokPluginConfiguration = {}
                 const found = await context.mutateDevices((devices) => {
                     const device = devices.find(({ udid }) => udid === request.params.udid);
                     if (!device) return false;
-                    // A removed account takes its niche with it.
+                    // A removed account takes its niche and warm-up with it.
                     const niches = nichesToJson(pruneNiches(accountNiches(device), accounts));
-                    device.pluginData = { ...device.pluginData, 'com.git-agni.tiktok': { ...device.pluginData['com.git-agni.tiktok'], accounts, niches } };
+                    const warmups = warmupsToJson(pruneWarmups(accountWarmups(device), accounts));
+                    device.pluginData = {
+                        ...device.pluginData, 'com.git-agni.tiktok': { ...device.pluginData['com.git-agni.tiktok'], accounts, niches, warmups },
+                    };
                     return true;
                 });
                 if (!found) return reply.code(404).send({ error: 'Device is not registered' });
@@ -214,6 +268,105 @@ export function createTikTokPlugin(configuration: TikTokPluginConfiguration = {}
                     return { account, niche };
                 },
             );
+
+            // The account's live warm-up schedules on this device.
+            const warmupSchedules = async (udid: string, account: string) => (await context.scheduler.listSchedules(500, udid))
+                .filter((row) => row.pluginId === WARMUP_TASK.pluginId && row.taskType === WARMUP_TASK.taskType
+                    && (row.status === 'active' || row.status === 'paused')
+                    && typeof row.payload.account === 'string' && normalizeHandle(row.payload.account) === account);
+            const cancelSchedules = async (ids: readonly string[]) => {
+                for (const id of ids) await context.scheduler.setScheduleStatus(id, 'cancelled').catch(() => undefined);
+            };
+            const saveWarmup = (udid: string, account: string, state: { startedOn: string; timezone: string } | null) => context.mutateDevices((devices) => {
+                const device = devices.find((entry) => entry.udid === udid);
+                if (!device) return;
+                const warmups = accountWarmups(device);
+                if (state) warmups[account] = state;
+                else delete warmups[account];
+                device.pluginData = { ...device.pluginData, 'com.git-agni.tiktok': { ...device.pluginData['com.git-agni.tiktok'], warmups: warmupsToJson(warmups) } };
+            });
+
+            // Warm-up status of every account on the device: day, phase, daily
+            // sessions, and the For You on-niche share per niche-phase day.
+            context.app.get<{ Params: { udid: string } }>('/api/devices/:udid/tiktok/warmup', async (request, reply) => {
+                const device = await deviceData(request.params.udid);
+                if (!device) return reply.code(404).send({ error: 'Device is not registered' });
+                const accounts = await Promise.all(Object.entries(accountWarmups(device)).map(async ([account, state]) => {
+                    const day = warmupDay(state);
+                    const runs = await warmupRuns(device.udid, account, state);
+                    return {
+                        account, ...state, day, phase: warmupPhase(day), runs,
+                        nicheShareByDay: dailyFeedShare(runs),
+                        schedules: (await warmupSchedules(device.udid, account)).map((row) => ({ id: row.id, timing: row.timing, status: row.status })),
+                    };
+                }));
+                return { plan: WARMUP_PLAN, accounts };
+            });
+
+            // Starts (or restarts from day 1) an account's warm-up: three daily
+            // sessions at the given local times. Replaces its earlier warm-up schedules.
+            context.app.put<{ Params: { udid: string }; Body: Record<string, unknown> }>('/api/devices/:udid/tiktok/warmup', async (request, reply) => {
+                const device = await deviceData(request.params.udid);
+                if (!device) return reply.code(404).send({ error: 'Device is not registered' });
+                if (device.disabled) return reply.code(409).send({ error: 'This device is disconnected — reconnect it before scheduling automation' });
+                const body = request.body ?? {};
+                if (typeof body.account !== 'string' || !body.account.trim()) return reply.code(400).send({ error: 'Choose an account' });
+                const account = normalizeHandle(body.account);
+                const niche = nicheForAccount(device, account);
+                if (!niche) return reply.code(400).send({ error: `Save a niche for ${account} first (Niches)` });
+                if (!niche.persona) return reply.code(400).send({ error: `Add a persona to ${account}'s niche first: the first two days teach the feed who the person is` });
+                const timezone = typeof body.timezone === 'string' ? body.timezone : 'UTC';
+                const times = Array.isArray(body.times) ? body.times.filter((time): time is string => typeof time === 'string') : [];
+                if (times.length !== 3 || times.some((time) => !LOCAL_TIME.test(time))) {
+                    return reply.code(400).send({ error: 'Give three times of day (morning, noon, evening) as HH:MM' });
+                }
+                let startedOn: string;
+                try {
+                    startedOn = warmupStartDate(new Date(), timezone, times);
+                } catch {
+                    return reply.code(400).send({ error: 'Unknown timezone' });
+                }
+                const payload = {
+                    account,
+                    durationMinutes: body.durationMinutes === undefined ? 10 : Number(body.durationMinutes),
+                    personality: typeof body.personality === 'string' ? body.personality : 'casual',
+                };
+                const previous = await warmupSchedules(device.udid, account);
+                // Cancelled first, or they would clash with the new ones at the same times.
+                await cancelSchedules(previous.map((row) => row.id));
+                const created: string[] = [];
+                try {
+                    for (const localTime of times) {
+                        const schedule = await context.scheduler.createTask({
+                            deviceUdid: device.udid,
+                            task: { ...WARMUP_TASK, payload },
+                            timing: { kind: 'daily', localTime, timezone },
+                            runWindowMinutes: body.runWindowMinutes === undefined ? 45 : Number(body.runWindowMinutes),
+                        }, device.pluginData['com.git-agni.tiktok'] ?? {});
+                        created.push(schedule.id);
+                    }
+                } catch (error) {
+                    await cancelSchedules(created);
+                    const message = error instanceof Error ? error.message : String(error);
+                    return reply.code(400).send({
+                        error: `${message}${previous.length ? ' (the earlier warm-up schedules were cancelled; start again with other times)' : ''}`,
+                    });
+                }
+                await saveWarmup(device.udid, account, { startedOn, timezone });
+                return { account, startedOn, timezone, schedules: created };
+            });
+
+            // Stops an account's warm-up: cancels its schedules and forgets its start day.
+            context.app.delete<{ Params: { udid: string }; Querystring: { account?: string } }>('/api/devices/:udid/tiktok/warmup', async (request, reply) => {
+                const device = await deviceData(request.params.udid);
+                if (!device) return reply.code(404).send({ error: 'Device is not registered' });
+                if (!request.query.account?.trim()) return reply.code(400).send({ error: 'Choose an account' });
+                const account = normalizeHandle(request.query.account);
+                const schedules = await warmupSchedules(device.udid, account);
+                await cancelSchedules(schedules.map((row) => row.id));
+                await saveWarmup(device.udid, account, null);
+                return { account, cancelled: schedules.length };
+            });
 
             context.app.post<{ Params: { udid: string }; Body: Record<string, string> }>(
                 '/api/devices/:udid/fragments/scroll-run', async (request, reply) => {

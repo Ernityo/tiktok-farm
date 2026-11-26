@@ -7,6 +7,14 @@
   <div class="timing" data-timing><label>Schedule<select name="timingKind"><option value="now">Run now</option><option value="once">Once</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label><label>When / local time<input name="time" type="datetime-local"></label><label>Weekdays (0–6)<input name="weekdays" placeholder="1,3,5"></label></div>
   <button type="submit">Schedule doomscroll</button>
 </form>
+<form id="tiktok-warmup-form" class="tiktok-form">
+  <h3>Warm-up</h3>
+  <p class="muted">Days 1–2: the feed learns the account's <em>persona</em>. Days 3–5: it's pulled to the <em>niche</em>, with one search a day (aim: ~70% of For You on-niche by day 5). Three agentic sessions a day, ~5 follows each, no comments. Needs a niche with a persona (Niches) and <code>OPENROUTER_API_KEY</code>. Starting again restarts from day 1.</p>
+  <div class="timing"><label>Account<input name="account" required autocomplete="off" placeholder="@handle"></label><label>Minutes per session<input name="duration" type="number" min="3" max="30" value="10" required></label><label>Personality<select name="personality"><option>casual</option><option>skimmer</option><option>engaged</option></select></label></div>
+  <div class="timing"><label>Morning<input name="morning" type="time" value="08:30" required></label><label>Noon<input name="noon" type="time" value="12:45" required></label><label>Evening<input name="evening" type="time" value="20:00" required></label><label>Run window (minutes)<input name="runWindow" type="number" min="1" max="240" value="45"></label></div>
+  <button type="submit">Start warm-up</button>
+  <div id="tiktok-warmup-status"></div>
+</form>
 <form id="tiktok-post-form" class="tiktok-form">
   <h3>Post media</h3>
   <label>Media (1–3 files)<input name="media" type="file" accept="image/*,video/*" multiple required></label>
@@ -39,6 +47,51 @@
     result.textContent = 'Task scheduled.';
     setTimeout(function () { location.reload(); }, 600);
   }
+  var warmupStatus = document.getElementById('tiktok-warmup-status');
+  function line(text, tag) { var element = document.createElement(tag || 'p'); element.textContent = text; return element; }
+  async function loadWarmups() {
+    try {
+      var response = await fetch('/api/devices/' + encodeURIComponent(deviceUdid) + '/tiktok/warmup');
+      if (!response.ok) return;
+      var data = await response.json();
+      warmupStatus.replaceChildren();
+      data.accounts.forEach(function (entry) {
+        var box = document.createElement('div');
+        var phase = entry.day < 1 ? 'starts on ' + entry.startedOn : 'day ' + entry.day + ' · ' + (entry.phase === 'persona' ? 'persona' : entry.phase === 'niche' ? 'niche' : 'done (plain niche sessions)');
+        var times = entry.schedules.map(function (row) { return row.timing.localTime + (row.status === 'paused' ? ' (paused)' : ''); }).join(', ') || 'no schedules';
+        box.appendChild(line(entry.account + ' — ' + phase + ' · ' + times, 'strong'));
+        var shares = entry.nicheShareByDay.map(function (day) { return day.date + ': ' + Math.round(day.share * 100) + '% of ' + day.videos; }).join(' · ');
+        if (shares) box.appendChild(line('For You on-niche: ' + shares + ' (aim ~' + Math.round(data.plan.targetOnNicheShare * 100) + '%)'));
+        var last = entry.runs[entry.runs.length - 1];
+        if (last) box.appendChild(line('Last session ' + new Date(last.startedAt).toLocaleString() + ' · ' + (last.phase || '?') + ' · ' + Math.round(last.feedOnNicheShare * 100) + '% of ' + last.feedVideos + ' on-target · ' + last.follows + ' follows' + (last.search ? ' · search "' + last.search.query + '": ' + last.search.videos + ' videos' + (last.search.error ? ' (' + last.search.error + ')' : '') : '') + (last.reason && last.reason !== 'completed' ? ' · ' + last.reason : ''), 'small'));
+        var stop = document.createElement('button');
+        stop.type = 'button'; stop.textContent = 'Stop warm-up';
+        stop.addEventListener('click', async function () {
+          var stopped = await fetch('/api/devices/' + encodeURIComponent(deviceUdid) + '/tiktok/warmup?account=' + encodeURIComponent(entry.account), {method: 'DELETE'});
+          result.textContent = stopped.ok ? 'Warm-up stopped for ' + entry.account + '.' : ((await stopped.json()).error || 'Request failed');
+          loadWarmups();
+        });
+        box.appendChild(stop);
+        warmupStatus.appendChild(box);
+      });
+    } catch (error) { /* status is optional */ }
+  }
+  loadWarmups();
+  document.getElementById('tiktok-warmup-form').addEventListener('submit', async function (event) {
+    event.preventDefault(); result.textContent = 'Starting warm-up…';
+    try {
+      var form = new FormData(event.currentTarget);
+      var response = await fetch('/api/devices/' + encodeURIComponent(deviceUdid) + '/tiktok/warmup', {method: 'PUT', headers: {'content-type': 'application/json'}, body: JSON.stringify({
+        account: form.get('account'), durationMinutes: Number(form.get('duration')), personality: form.get('personality'),
+        times: [form.get('morning'), form.get('noon'), form.get('evening')], runWindowMinutes: Number(form.get('runWindow')) || undefined,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+      })});
+      var body = await response.json();
+      if (!response.ok) throw new Error(body.error || 'Request failed');
+      result.textContent = 'Warm-up of ' + body.account + ' starts ' + body.startedOn + ' (3 daily sessions scheduled).';
+      loadWarmups();
+    } catch (error) { result.textContent = error.message; }
+  });
   document.getElementById('tiktok-doomscroll-form').addEventListener('submit', async function (event) {
     event.preventDefault(); result.textContent = 'Scheduling…';
     try { var form = new FormData(event.currentTarget); var payload = {durationMinutes: Number(form.get('duration')), personality: form.get('personality'), likeEnabled: form.has('like'), saveEnabled: form.has('save')}; if (form.get('account')) payload.account = form.get('account'); await schedule('doomscroll', payload, timing(form)); } catch (error) { result.textContent = error.message; }

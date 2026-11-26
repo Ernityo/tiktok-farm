@@ -16,7 +16,11 @@ export interface Niche {
     keywords: string[];
     /** Topics to treat as off-niche even if they look close. */
     avoid: string[];
-    /** Who the account is, for the voice of its comments (e.g. "30-year-old French woman, barista, watches AI stories to unwind"). */
+    /**
+     * Who the account is (e.g. "30-year-old French woman, barista, watches AI
+     * stories to unwind"): the voice of its comments, and what the first warm-up
+     * phase teaches the feed before the niche (src/tiktok/warmup.ts).
+     */
     persona?: string;
 }
 
@@ -88,7 +92,10 @@ export function pruneNiches(niches: Record<string, Niche>, accounts: readonly st
 }
 
 export function nicheToJson(niche: Niche): JsonObject {
-    return { description: niche.description, keywords: [...niche.keywords], avoid: [...niche.avoid] };
+    return {
+        description: niche.description, keywords: [...niche.keywords], avoid: [...niche.avoid],
+        ...(niche.persona ? { persona: niche.persona } : {}),
+    };
 }
 
 export function nichesToJson(niches: Record<string, Niche>): JsonObject {

@@ -13,7 +13,7 @@ import { ReelWatchTracker } from '../facebook/reels-progress.js';
 import { appLaunchSettleMs, performSwipe, tapCoordinate } from '../tiktok/actions.js';
 import { adFromWords, readCaptionWords } from '../tiktok/ad-detection.js';
 import { AppStuckError, commentAllowance, commentChance, commentOpen, commentWarmupMs } from './comment.js';
-import type { AgentApp } from './model.js';
+import type { AgentApp, ScrollGoal } from './model.js';
 import {
     autoSkipReason, engagementAllowance, finalLingerMs, FULL_WATCH_CAP_MS, sameCaption, sessionLengthMs, SHOP_POST, swipeRecord, timePlan,
     type AgentPlan, type SwipeRecord,
@@ -22,6 +22,7 @@ import { PROFILES, type Personality } from '../tiktok/doomscroll-profile.js';
 import { nicheForAccount, normalizeHandle, type Niche } from '../tiktok/niche.js';
 import type { OcrWord } from '../tiktok/ocr.js';
 import { coordinateProfile } from '../tiktok/runtime-settings.js';
+import { followAllowance } from '../tiktok/warmup.js';
 
 // One agentic doomscroll session on one phone, for any short-video feed
 // (TikTok, Facebook Reels, Instagram Reels): observe a video, take the
@@ -129,7 +130,41 @@ export interface AgentAppAdapter {
      * AppStuckError when the feed can't be brought back. Apps without it never comment.
      */
     comment?(context: AppContext, text: string): Promise<{ verified: boolean; durationMs?: number; steps?: Record<string, number> }>;
+    /**
+     * Follows the creator of the video on screen and comes back to it in the
+     * feed. 'plus': the small + under their avatar. 'profile': open their
+     * profile, Follow, watch one or two of their videos, back. Throws when it
+     * couldn't follow; throws AppStuckError when the feed can't be brought back.
+     * Apps without it never follow.
+     */
+    follow?(context: AppContext, how: FollowHow): Promise<{ verified: boolean; profileVideos?: number; durationMs: number }>;
+    /** The ways `follow` can follow; defaults to both. */
+    readonly followModes?: readonly FollowHow[];
+    /**
+     * From the feed: searches `query` and opens the first video result in the
+     * vertical player, ready to be scrolled like the feed. Throws when it
+     * can't (AppStuckError when the feed can't be brought back either).
+     */
+    openSearch?(context: AppContext, query: string): Promise<void>;
+    /** From a search result video: back to the main feed. Throws AppStuckError when it can't. */
+    leaveSearch?(context: AppContext): Promise<void>;
 }
+
+export type FollowHow = 'plus' | 'profile';
+
+/** Share of follows done from the profile (Follow there, watch 1-2 videos) rather than the + on the avatar. */
+const PROFILE_FOLLOW_CHANCE = 0.4;
+
+/** A detour through search in the middle of a session (warm-up, niche phase). */
+export interface SearchDetour {
+    query: string;
+    /** Scroll the main feed this long before searching. */
+    afterMs: number;
+    /** Judged result videos before going back to the main feed. */
+    videos: number;
+}
+
+export type FeedPlace = 'feed' | 'search';
 
 export interface AccountCheck {
     /** The account the app was on. */
@@ -154,6 +189,16 @@ export interface StartOptions {
     niche?: Niche;
     /** Thumb-side swipe style; defaults to right-thumb. 'fixed' uses the app's fixed swipe. */
     swipeStyle?: SwipeStyle;
+    /** What the session teaches the feed (kept in the logs); the prompt is the caller's. Defaults to the niche. */
+    goal?: ScrollGoal;
+    /** Creators to follow over the session (paced); 0 or unset = never follow. */
+    follows?: number;
+    /** Never comment, even on apps that can. */
+    noComments?: boolean;
+    /** Search once, part-way through the session. */
+    search?: SearchDetour;
+    /** Extra fields written to session.json and summary.json (e.g. the warm-up day and phase). */
+    meta?: Record<string, unknown>;
 }
 
 export interface Observation {
@@ -167,7 +212,12 @@ export interface Observation {
     isAd: boolean;
     remainingMs: number;
     /** Likes/saves/comments done so far, and how many the rate allows if this video gets one. */
-    engagement: { likes: number; likesAllowed: number; saves: number; savesAllowed: number; comments?: number; commentsAllowed?: number };
+    engagement: {
+        likes: number; likesAllowed: number; saves: number; savesAllowed: number;
+        comments?: number; commentsAllowed?: number; follows?: number; followsAllowed?: number;
+    };
+    /** Main feed or search results. */
+    place: FeedPlace;
     /** Set when the session already knows to skip this video without asking the model (e.g. 'ad', 'shop', 'card', 'foreign'). */
     autoSkip?: string;
 }
@@ -184,6 +234,13 @@ export interface SessionSummary {
     likes: number;
     saves: number;
     comments: number;
+    follows: number;
+    /** Judged videos on the main feed (For You), and the share of them on-niche: the warm-up's convergence measure. */
+    feedVideos: number;
+    feedOnNicheShare: number;
+    /** The search detour, when one was planned. */
+    search?: { query: string; videos: number; onNiche: number; error?: string };
+    goal: ScrollGoal;
     /** Share of judged videos liked / saved. */
     likeRate: number;
     saveRate: number;
@@ -196,6 +253,7 @@ export interface SessionSummary {
     logDirectory: string;
     /** The account check after the first videos, when the app has one. */
     accountCheck?: AccountCheck;
+    meta?: Record<string, unknown>;
 }
 
 interface CurrentVideo {
@@ -208,6 +266,7 @@ interface CurrentVideo {
     /** The stricter second ad pass, running while the model thinks. */
     strictAd: Promise<boolean>;
     reelId?: string;
+    place: FeedPlace;
     /** Extra swipes it took to get here because the previous swipe didn't move the feed on. */
     retrySwipes: SwipeRecord[];
 }
@@ -320,6 +379,14 @@ export class AgentSession {
     private likes = 0;
     private saves = 0;
     private comments = 0;
+    private follows = 0;
+    private feedVideos = 0;
+    private feedOnNiche = 0;
+    private place: FeedPlace = 'feed';
+    private searchState: 'pending' | 'in' | 'done' | undefined;
+    private searchVideos = 0;
+    private searchOnNiche = 0;
+    private searchError: string | undefined;
     /** Videos judged when the last comment was left. */
     private lastCommentAt: number | undefined;
     private ads = 0;
@@ -345,8 +412,24 @@ export class AgentSession {
         readonly niche: Niche,
         readonly personality: Personality,
         private readonly swipeStyle: SwipeProfile | undefined,
+        private readonly extras: Pick<StartOptions, 'goal' | 'follows' | 'noComments' | 'search' | 'meta'> & { lengthMs: number },
     ) {
         if (account && adapter.ensureAccount) this.accountCheckAfter = 1 + Math.floor(Math.random() * 2);
+        if (extras.search) this.searchState = 'pending';
+    }
+
+    get goal(): ScrollGoal {
+        return this.extras.goal ?? 'niche';
+    }
+
+    /** Follows allowed by now, paced over the session; 0 when the session doesn't follow. */
+    private followsAllowed(): number {
+        if (!this.adapter.follow || !this.extras.follows) return 0;
+        return followAllowance(this.extras.follows, (Date.now() - this.startedAt) / this.extras.lengthMs);
+    }
+
+    private canComment(): boolean {
+        return Boolean(this.adapter.comment) && !this.extras.noComments;
     }
 
     get app(): AgentApp {
@@ -377,12 +460,21 @@ export class AgentSession {
             const stamp = new Date().toISOString().replace(/[:.]/g, '-');
             const logDirectory = path.resolve('.agent-runs', `${stamp}-${adapter.app}-${(account ?? 'current').replace(/^@/, '')}`);
             await mkdir(logDirectory, { recursive: true });
+            const lengthMs = sessionLengthMs(options.minutes);
             await writeFile(path.join(logDirectory, 'session.json'), JSON.stringify({
                 app: adapter.app, udid: device.udid, account, niche, personality: options.personality, minutes: options.minutes,
+                goal: options.goal ?? 'niche',
+                ...(options.follows ? { follows: options.follows } : {}),
+                ...(options.search ? { search: options.search } : {}),
+                ...(options.meta ? { meta: options.meta } : {}),
                 startedAt: new Date().toISOString(),
             }, null, 2));
             const session = new AgentSession(
-                adapter, context, Date.now() + sessionLengthMs(options.minutes), logDirectory, account, niche, options.personality, swipeStyle,
+                adapter, context, Date.now() + lengthMs, logDirectory, account, niche, options.personality, swipeStyle,
+                {
+                    lengthMs, goal: options.goal, follows: options.follows, noComments: options.noComments, search: options.search,
+                    meta: options.meta,
+                },
             );
             return { session, observation: await session.observe(Date.now()) };
         } catch (error) {
@@ -451,7 +543,7 @@ export class AgentSession {
         }
         this.videos += 1;
         this.current = {
-            index: this.videos, arrivedAt, observedAt: Date.now(), caption, isAd, retrySwipes,
+            index: this.videos, arrivedAt, observedAt: Date.now(), caption, isAd, retrySwipes, place: this.place,
             strictAd: isAd || !this.adapter.strictAd ? Promise.resolve(isAd) : this.adapter.strictAd(screenshot).catch(() => false),
             ...(inspection.reelId ? { reelId: inspection.reelId } : {}),
         };
@@ -463,12 +555,14 @@ export class AgentSession {
         const judgedIncludingThis = this.decisionMs.length + 1;
         const profile = PROFILES[this.personality];
         const autoSkip = autoSkipReason({ isAd, caption }) ?? inspection.autoSkip;
+        const followsAllowed = this.followsAllowed();
         return {
-            video: this.videos, image, captionImage, caption, isAd, remainingMs: this.remainingMs,
+            video: this.videos, image, captionImage, caption, isAd, remainingMs: this.remainingMs, place: this.place,
             engagement: {
                 likes: this.likes, likesAllowed: engagementAllowance(judgedIncludingThis, profile.likeChance),
                 saves: this.saves, savesAllowed: this.adapter.canSave ? engagementAllowance(judgedIncludingThis, profile.saveChance) : 0,
-                ...(this.adapter.comment
+                ...(followsAllowed > 0 ? { follows: this.follows, followsAllowed } : {}),
+                ...(this.canComment()
                     // The model only sees a comments line while one may be left now.
                     ? {
                         comments: this.comments,
@@ -497,9 +591,10 @@ export class AgentSession {
             const decidedAt = Date.now();
             const canSave = this.adapter.canSave;
             const supported = {
-                ...plan, ...(canSave ? {} : { save: false }), ...(this.adapter.comment && this.commentsWarm() ? {} : { comment: null }),
+                ...plan, ...(canSave ? {} : { save: false }), ...(this.canComment() && this.commentsWarm() ? {} : { comment: null }),
+                ...(plan.follow && plan.watch === 'full' && this.follows < this.followsAllowed() ? {} : { follow: false }),
                 // Possibly the wrong account until it has been checked.
-                ...(this.accountCheckAfter !== undefined ? { likeAtMs: null, save: false, comment: null } : {}),
+                ...(this.accountCheckAfter !== undefined ? { likeAtMs: null, save: false, comment: null, follow: false } : {}),
             };
             const timed = timePlan(supported, this.personality, {
                 judged: this.decisionMs.length, likes: this.likes, saves: this.saves, comments: this.comments,
@@ -553,7 +648,18 @@ export class AgentSession {
 
             const isAd = await video.strictAd;
             if (isAd) this.ads += 1;
-            if (plan.onNiche >= 0.5) this.onNiche += 1;
+            const onNiche = plan.onNiche >= 0.5;
+            if (onNiche) this.onNiche += 1;
+            if (video.place === 'feed') {
+                this.feedVideos += 1;
+                if (onNiche) this.feedOnNiche += 1;
+            } else {
+                this.searchVideos += 1;
+                if (onNiche) this.searchOnNiche += 1;
+            }
+            // After the watch, like someone who decides at the end: follow the creator.
+            const followed = supported.follow && !isAd ? await this.followCreator() : undefined;
+            if (followed) this.advancedOnItsOwn = false;
             if (plan.watch === 'skip') {
                 this.skips += 1;
                 this.skipScreenMs.push(Date.now() - video.arrivedAt);
@@ -573,14 +679,17 @@ export class AgentSession {
                 this.advancedOnItsOwn = false;
             }
             let swipe: SwipeRecord | null = null;
+            const detour = last || this.accountCheckAfter !== undefined ? undefined : await this.searchDetour();
             if (last) await sleep(finalLingerMs());
+            else if (detour) console.log(`[agent] ${detour === 'opened' ? 'on the search results' : 'back on the main feed'}`);
             else if (this.advancedOnItsOwn) console.log('[agent] already on the next video; not swiping');
             else swipe = await this.swipe(isAd || SHOP_POST.test(video.caption));
             const arrivedAt = Date.now();
 
             await appendFile(path.join(this.logDirectory, 'decisions.jsonl'), `${JSON.stringify({
                 video: video.index, caption: video.caption, isAd, ...(video.reelId ? { reelId: video.reelId } : {}),
-                plan, timed, watched, liked, ...(canSave ? { saved } : {}), ...(commented ? { commented } : {}),
+                place: video.place, plan, timed, watched, liked, ...(canSave ? { saved } : {}), ...(commented ? { commented } : {}),
+                ...(followed ? { followed } : {}), ...(detour ? { search: detour } : {}),
                 ...(this.advancedOnItsOwn ? { advancedOnItsOwn: true } : {}),
                 decisionMs: decidedAt - video.observedAt, screenMs: arrivedAt - video.arrivedAt, swipe,
                 ...(video.retrySwipes.length ? { retrySwipes: video.retrySwipes } : {}),
@@ -593,6 +702,62 @@ export class AgentSession {
             return { observation: await this.observe(arrivedAt, swipe ? video : undefined) };
         } finally {
             this.busy = false;
+        }
+    }
+
+    /**
+     * Opens the search results once the feed has been scrolled long enough,
+     * and leaves them after enough result videos. Returns what it did, or
+     * undefined to swipe on as usual. A failed search is logged and the
+     * session stays on the main feed; AppStuckError stops it.
+     */
+    private async searchDetour(): Promise<'opened' | 'left' | undefined> {
+        const search = this.extras.search;
+        if (!search) return undefined;
+        if (this.searchState === 'pending' && Date.now() - this.startedAt >= search.afterMs) {
+            this.searchState = 'done';
+            if (!this.adapter.openSearch || !this.adapter.leaveSearch) {
+                this.searchError = 'unsupported';
+                console.log(`[agent] search skipped: not supported on ${this.adapter.label} yet`);
+                return undefined;
+            }
+            try {
+                console.log(`[agent] searching ${JSON.stringify(search.query)}`);
+                await this.adapter.openSearch(this.context, search.query);
+                this.searchState = 'in';
+                this.place = 'search';
+                return 'opened';
+            } catch (error) {
+                if (error instanceof AppStuckError) throw error;
+                this.searchError = error instanceof Error ? error.message : String(error);
+                console.log(`[agent] search failed, staying on the main feed: ${this.searchError}`);
+                return undefined;
+            }
+        }
+        if (this.searchState === 'in' && this.searchVideos >= search.videos) {
+            this.searchState = 'done';
+            await this.adapter.leaveSearch!(this.context);
+            this.place = 'feed';
+            return 'left';
+        }
+        return undefined;
+    }
+
+    /** Follows the video's creator; a failure is logged and the session goes on, AppStuckError stops it. */
+    private async followCreator(): Promise<{ how: FollowHow; verified?: boolean; profileVideos?: number; ms?: number; error?: string }> {
+        const modes = this.adapter.followModes ?? ['plus', 'profile'];
+        const preferred: FollowHow = Math.random() < PROFILE_FOLLOW_CHANCE ? 'profile' : 'plus';
+        const how: FollowHow = modes.includes(preferred) ? preferred : modes[0]!;
+        try {
+            const { verified, profileVideos, durationMs } = await this.adapter.follow!(this.context, how);
+            this.follows += 1;
+            console.log(`[agent] followed (${how}${profileVideos ? `, watched ${profileVideos} of their videos` : ''})${verified ? '' : ' (not confirmed)'} in ${(durationMs / 1000).toFixed(1)} s`);
+            return { how, verified, ...(profileVideos ? { profileVideos } : {}), ms: durationMs };
+        } catch (error) {
+            if (error instanceof AppStuckError) throw error;
+            const message = error instanceof Error ? error.message : String(error);
+            console.log(`[agent] follow failed: ${message}`);
+            return { how, error: message };
         }
     }
 
@@ -689,6 +854,18 @@ export class AgentSession {
             likes: this.likes,
             saves: this.saves,
             comments: this.comments,
+            follows: this.follows,
+            feedVideos: this.feedVideos,
+            feedOnNicheShare: this.feedVideos ? Math.round((this.feedOnNiche / this.feedVideos) * 100) / 100 : 0,
+            ...(this.extras.search
+                ? {
+                    search: {
+                        query: this.extras.search.query, videos: this.searchVideos, onNiche: this.searchOnNiche,
+                        ...(this.searchError ? { error: this.searchError } : this.searchState === 'pending' ? { error: 'session ended first' } : {}),
+                    },
+                }
+                : {}),
+            goal: this.goal,
             likeRate: rate(this.likes),
             saveRate: rate(this.saves),
             ads: this.ads,
@@ -697,6 +874,7 @@ export class AgentSession {
             elapsedMs: Date.now() - this.startedAt,
             logDirectory: this.logDirectory,
             ...(this.accountCheck ? { accountCheck: this.accountCheck } : {}),
+            ...(this.extras.meta ? { meta: this.extras.meta } : {}),
         };
         this.closed = summary;
         await writeFile(path.join(this.logDirectory, 'summary.json'), JSON.stringify(summary, null, 2)).catch(() => undefined);
