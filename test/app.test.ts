@@ -15,7 +15,7 @@ function snapshot(): RegistrationSnapshot {
     return {
         id: device.udid, device, name: device.name, coordinateProfile: 'iphone8',
         availableProfiles: [{ name: 'iphone8', displayName: 'iPhone 8', screenSize: { width: 375, height: 667 } }],
-        recommendedProfile: 'iphone8', wdaLocalPort: 8100, mjpegLocalPort: 9100,
+        recommendedProfile: 'iphone8', wdaLocalPort: 8100, mjpegLocalPort: 9100, wdaRemotePort: 21480, mjpegRemotePort: 21481,
         tiktokAccounts: [], hasPasscode: false, busy: false,
         checks: {
             host: passed, connection: passed, signing: passed, developer: passed, wda: passed,

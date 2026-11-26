@@ -9,7 +9,7 @@ import { remote, type Browser } from 'webdriverio';
 import { switchTikTokAccount, tapCoordinate } from '../tiktok/actions.js';
 import { coordinateProfiles, coordinatesForProfile, profileForProductType, type CoordinateProfile } from './coordinates.js';
 import { discoverConnectedDevices, type Device } from './discovery.js';
-import { loadRegisteredDevices, mutateRegisteredDevices, type RegisteredDevice } from './registry.js';
+import { allocatePhonePorts, loadRegisteredDevices, mutateRegisteredDevices, type RegisteredDevice } from './registry.js';
 import { passcodeForDevice, setDevicePasscode } from './secrets.js';
 import { WdaRemoteControl } from './wda-remote.js';
 import { diagnoseWdaLaunchFailure } from './wda/diagnostics.js';
@@ -34,6 +34,9 @@ export interface RegistrationSnapshot {
     recommendedProfile?: CoordinateProfile;
     wdaLocalPort: number;
     mjpegLocalPort: number;
+    /** Ports WDA and MJPEG listen on inside the phone; picked at random so no two phones share them. */
+    wdaRemotePort: number;
+    mjpegRemotePort: number;
     tiktokAccounts: string[];
     hasPasscode: boolean;
     busy: boolean;
@@ -173,6 +176,9 @@ export class DeviceRegistrationService implements DeviceRegistrationManager {
                     busy: false,
                     hasPasscode,
                     };
+                    if (restored.wdaRemotePort === undefined || restored.mjpegRemotePort === undefined) {
+                        Object.assign(restored, allocatePhonePorts(await this.loadDevices(), Array.from(this.sessions.values())));
+                    }
                     delete restored.compatibleProfiles;
                     this.sessions.set(stored.id, restored);
                 }
@@ -203,7 +209,9 @@ export class DeviceRegistrationService implements DeviceRegistrationManager {
         }
         const candidate = (await this.candidates()).find((device) => device.udid === udid);
         if (!candidate) throw new Error('The selected device is not connected or is already registered');
-        const ports = await allocateDevicePorts(await this.loadDevices(), Array.from(this.sessions.values()));
+        const registered = await this.loadDevices();
+        const ports = await allocateDevicePorts(registered, Array.from(this.sessions.values()));
+        const phonePorts = allocatePhonePorts(registered, Array.from(this.sessions.values()));
         const checks = Object.fromEntries(checkNames.map((name) => [name, check('pending', 'Not checked yet')])) as RegistrationSession['checks'];
         const session: RegistrationSession = {
             id: udid,
@@ -213,6 +221,7 @@ export class DeviceRegistrationService implements DeviceRegistrationManager {
             recommendedProfile: profileForProductType(candidate.productType),
             coordinateProfile: profileForProductType(candidate.productType),
             ...ports,
+            ...phonePorts,
             tiktokAccounts: [],
             hasPasscode: false,
             busy: false,
@@ -353,6 +362,8 @@ export class DeviceRegistrationService implements DeviceRegistrationManager {
             IOS_UDID: session.device.udid,
             WDA_LOCAL_PORT: String(session.wdaLocalPort),
             MJPEG_LOCAL_PORT: String(session.mjpegLocalPort),
+            WDA_REMOTE_PORT: String(session.wdaRemotePort),
+            MJPEG_REMOTE_PORT: String(session.mjpegRemotePort),
             ALLOW_PROVISIONING_DEVICE_REGISTRATION: String(authorized),
         });
         if (!result.ok) {
@@ -464,6 +475,8 @@ export class DeviceRegistrationService implements DeviceRegistrationManager {
                 coordinateProfile: session.coordinateProfile,
                 wdaLocalPort: session.wdaLocalPort,
                 mjpegLocalPort: session.mjpegLocalPort,
+                wdaRemotePort: session.wdaRemotePort,
+                mjpegRemotePort: session.mjpegRemotePort,
                 ...(session.passcode ? { passcode: session.passcode } : {}),
                 // coordinateProfile is a top-level field; don't duplicate it into pluginData.
                 pluginData: { 'com.git-agni.tiktok': { accounts: session.tiktokAccounts } },
@@ -549,6 +562,8 @@ export class DeviceRegistrationService implements DeviceRegistrationManager {
                 IOS_UDID: session.device.udid,
                 WDA_LOCAL_PORT: String(session.wdaLocalPort),
                 MJPEG_LOCAL_PORT: String(session.mjpegLocalPort),
+                WDA_REMOTE_PORT: String(session.wdaRemotePort),
+                MJPEG_REMOTE_PORT: String(session.mjpegRemotePort),
             },
             stdio: ['ignore', 'pipe', 'pipe'],
         });

@@ -7,7 +7,7 @@ interface Snapshot {
     id: string; device: Device & { productType?: string; modelName?: string }; name: string; coordinateProfile?: string;
     availableProfiles: Array<{ name: string; displayName: string; screenSize: { width: number; height: number } }>;
     recommendedProfile?: string;
-    wdaLocalPort: number; mjpegLocalPort: number; tiktokAccounts: string[]; hasPasscode: boolean;
+    wdaLocalPort: number; mjpegLocalPort: number; wdaRemotePort: number; mjpegRemotePort: number; tiktokAccounts: string[]; hasPasscode: boolean;
     busy: boolean; checks: Record<string, RegistrationCheck>; logs: string[]; canFinalize: boolean; finalized: boolean;
 }
 
@@ -90,7 +90,7 @@ function render(snapshot: Snapshot): void {
     }
     if (document.activeElement !== accountsInput) accountsInput.value = snapshot.tiktokAccounts.join(', ');
     passcodeInput.placeholder = snapshot.hasPasscode ? 'Passcode saved in this setup session' : 'Optional numeric passcode';
-    ports.textContent = `WDA ${snapshot.wdaLocalPort} · video ${snapshot.mjpegLocalPort}`;
+    ports.textContent = `WDA ${snapshot.wdaLocalPort} · video ${snapshot.mjpegLocalPort} · on phone ${snapshot.wdaRemotePort} / ${snapshot.mjpegRemotePort}`;
     checks.replaceChildren(...Object.entries(snapshot.checks).map(([key, value]) => {
         const row = document.createElement('article'); row.className = `registration-check ${value.state}`;
         const state = document.createElement('span'); state.className = `check-mark ${value.state}`; state.textContent = value.state === 'passed' ? '✓' : value.state === 'checking' ? '…' : '!';
