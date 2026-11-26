@@ -22,6 +22,7 @@ import { loadRegisteredDevices } from '../devices/registry.js';
 import { RegistryWdaRemoteControl } from '../devices/registry-remote.js';
 import { emitTouch } from '../devices/touch-events.js';
 import { MAX_TYPING_LENGTH } from '../devices/typing.js';
+import { closeExplore, exploreContext, look, swipe, tap } from './explore.js';
 
 // MCP server for agentic doomscroll (TikTok, Facebook Reels or Instagram
 // Reels), driven from an interactive Claude Code session (registered in
@@ -98,14 +99,15 @@ const server = new McpServer({ name: 'doomscroll-agent', version: '0.1.0' });
 
 server.registerTool('doomscroll_start', {
     title: 'Start agentic doomscroll',
-    description: 'Unlocks the phone, opens TikTok, Facebook Reels or Instagram Reels (already on the account) and returns the niche plus the first video. '
+    description: 'Unlocks the phone, opens TikTok, Facebook Reels or Instagram Reels and returns the niche plus the first video. On TikTok the account is checked after the first video or two '
+        + '(Profile tab) and switched to if needed; nothing is liked or saved before that. On Facebook/Instagram the phone must already be on the account. '
         + 'Ads, shop posts and cards are skipped without you. Then call doomscroll_step once per video until it reports the session is over.',
     inputSchema: {
         app: z.enum(AGENT_APPS).default('tiktok').describe('Which feed to scroll (default tiktok). Facebook and Instagram like but never save'),
         minutes: z.number().int().min(1).max(60).describe('Session length in minutes'),
         personality: z.enum(['skimmer', 'casual', 'engaged']).default('casual')
             .describe('Viewer type: caps likes/saves and sets watch lengths (default casual)'),
-        account: z.string().optional().describe('Handle the phone is already on, e.g. @fitjulie; its saved niche is used (no switching). '
+        account: z.string().optional().describe('Account handle, e.g. @fitjulie; its saved niche is used. On TikTok the session switches to it if the phone is on another account. '
             + 'On Facebook/Instagram it only picks the niche (that app\'s niche for the handle, else its TikTok one)'),
         niche: z.string().max(1000).optional().describe('Niche description; overrides the saved one'),
         udid: z.string().optional().describe('Device UDID; only needed when several phones are registered'),
@@ -114,6 +116,7 @@ server.registerTool('doomscroll_start', {
     },
 }, async ({ app, minutes, personality, account, niche, udid, swipeStyle }) => {
     if (session) return failure('A session is already running; call doomscroll_stop first');
+    await closeExplore();
     try {
         const started = await AgentSession.start({
             adapter: AGENT_ADAPTERS[app],
@@ -289,10 +292,91 @@ server.registerTool('unlock_phone', {
     }
 });
 
+// Hands-on tools to work out a new flow on the real app before scripting it.
+const APP_ARG = z.string().default('tiktok').describe('tiktok, facebook, instagram, or a bundle id; the app the session attaches to (default tiktok)');
+const BUSY = 'A doomscroll session is running on the phone; call doomscroll_stop first';
+
+async function lookContent(context: Awaited<ReturnType<typeof exploreContext>>, elements = true): Promise<Content[]> {
+    const { image, text } = await look(context, { elements });
+    return [{ type: 'image', data: image.toString('base64'), mimeType: 'image/jpeg' }, { type: 'text', text }];
+}
+
+server.registerTool('phone_look', {
+    title: 'Look at the phone screen',
+    description: 'Screenshot of the phone plus the visible labelled elements of the accessibility tree (type, label, centre and size in points). '
+        + 'Attaches to the app as it is on screen unless launch is true (cold relaunch). For working out a flow before scripting it.',
+    inputSchema: {
+        app: APP_ARG,
+        launch: z.boolean().optional().describe('Relaunch the app from cold first (default false)'),
+        elements: z.boolean().optional().describe('Include the element list (default true; turn off if the page source hangs)'),
+        udid: z.string().optional().describe('Device UDID; only needed when several phones are registered'),
+    },
+}, async ({ app, launch, elements, udid }) => {
+    if (session) return failure(BUSY);
+    try {
+        const context = await exploreContext(app, { launch: launch ?? false, ...(udid ? { udid } : {}) });
+        return { content: await lookContent(context, elements ?? true) };
+    } catch (error) {
+        return failure(error);
+    }
+});
+
+server.registerTool('phone_tap', {
+    title: 'Tap the phone screen',
+    description: 'Taps a point (in points, as phone_look reports) with a human-like tap, waits, and returns a fresh look at the screen.',
+    inputSchema: {
+        x: z.number(), y: z.number(),
+        app: APP_ARG,
+        wait_ms: z.number().int().min(0).max(10000).optional().describe('Wait before looking again (default 1500)'),
+        elements: z.boolean().optional().describe('Include the element list in the look after (default true)'),
+        udid: z.string().optional(),
+    },
+}, async ({ x, y, app, wait_ms, elements, udid }) => {
+    if (session) return failure(BUSY);
+    try {
+        const context = await exploreContext(app, udid ? { udid } : {});
+        await tap(context, x, y);
+        await context.driver.pause(wait_ms ?? 1500);
+        return { content: await lookContent(context, elements ?? true) };
+    } catch (error) {
+        return failure(error);
+    }
+});
+
+server.registerTool('phone_swipe', {
+    title: 'Swipe on the phone screen',
+    description: 'Swipes from one point to another (points), waits, and returns a fresh look at the screen.',
+    inputSchema: {
+        from_x: z.number(), from_y: z.number(), to_x: z.number(), to_y: z.number(),
+        duration_ms: z.number().int().min(100).max(3000).optional().describe('Default 450'),
+        app: APP_ARG,
+        wait_ms: z.number().int().min(0).max(10000).optional().describe('Wait before looking again (default 1500)'),
+        elements: z.boolean().optional(),
+        udid: z.string().optional(),
+    },
+}, async ({ from_x, from_y, to_x, to_y, duration_ms, app, wait_ms, elements, udid }) => {
+    if (session) return failure(BUSY);
+    try {
+        const context = await exploreContext(app, udid ? { udid } : {});
+        await swipe(context, { x: from_x, y: from_y }, { x: to_x, y: to_y }, duration_ms ?? 450);
+        await context.driver.pause(wait_ms ?? 1500);
+        return { content: await lookContent(context, elements ?? true) };
+    } catch (error) {
+        return failure(error);
+    }
+});
+
+server.registerTool('phone_release', {
+    title: 'Release the phone',
+    description: 'Closes the session phone_look/phone_tap/phone_swipe keep open (the app stays as it is).',
+    inputSchema: {},
+}, async () => ({ content: [{ type: 'text' as const, text: await closeExplore() ? 'Released' : 'Nothing was open' }] }));
+
 async function shutdown(): Promise<void> {
     const running = session;
     session = undefined;
     await running?.stop('stopped').catch(() => undefined);
+    await closeExplore();
     process.exit(0);
 }
 
