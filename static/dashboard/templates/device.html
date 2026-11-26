@@ -21,6 +21,7 @@
                 <button id="open-accounts" class="button secondary" type="button">Accounts</button>
                 <button id="open-niches" class="button secondary" type="button">Niches</button>
                 <button id="open-passcode" class="button secondary" type="button">Passcode</button>
+                <button id="open-ports" class="button secondary" type="button">Ports</button>
                 <button id="open-calibrate" class="button secondary" type="button">Touch points</button>
                 <button id="open-remove" class="button danger" type="button">Remove device</button>
                 __PLUGIN_NAV____AUTH_NAV__
@@ -162,6 +163,24 @@
                 <span id="passcode-result" class="run-meta" aria-live="polite"></span><span class="spacer"></span>
                 <button id="passcode-clear" class="button secondary" type="button">Clear</button>
                 <button class="button primary" type="submit">Save passcode</button>
+            </div>
+        </form>
+    </dialog>
+    <dialog id="ports-dialog">
+        <form id="ports-form" class="modal" autocomplete="off">
+            <div class="modal-head">
+                <div><span class="eyebrow">This device</span><h2>Ports inside the phone</h2></div>
+                <button id="close-ports" class="icon-button" type="button">Close</button>
+            </div>
+            <p>The ports WebDriverAgent and its video stream listen on inside this phone. Each phone needs its own; pick from 20000–31999 to stay clear of the usual automation defaults (8100, 9100). Saving restarts WDA on this phone.</p>
+            <label for="wda-remote-port">WDA port</label>
+            <input id="wda-remote-port" type="number" min="1024" max="65535" step="1" required value="__DEVICE_WDA_REMOTE_PORT__">
+            <label for="mjpeg-remote-port">Video port</label>
+            <input id="mjpeg-remote-port" type="number" min="1024" max="65535" step="1" required value="__DEVICE_MJPEG_REMOTE_PORT__">
+            <div class="form-actions">
+                <span id="ports-result" class="run-meta" aria-live="polite"></span><span class="spacer"></span>
+                <button id="ports-random" class="button secondary" type="button">Pick random</button>
+                <button class="button primary" type="submit">Save ports</button>
             </div>
         </form>
     </dialog>

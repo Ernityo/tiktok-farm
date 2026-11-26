@@ -92,6 +92,14 @@ const elements = {
     passcodeClear: element('#passcode-clear'),
     passcodeState: element('#passcode-state'),
     passcodeResult: element('#passcode-result'),
+    portsDialog: element('#ports-dialog'),
+    openPorts: element('#open-ports'),
+    closePorts: element('#close-ports'),
+    portsForm: element('#ports-form'),
+    wdaRemotePort: element('#wda-remote-port'),
+    mjpegRemotePort: element('#mjpeg-remote-port'),
+    portsRandom: element('#ports-random'),
+    portsResult: element('#ports-result'),
     openCalibrate: element('#open-calibrate'),
     calibrateDialog: element('#calibrate-dialog'),
     closeCalibrate: element('#close-calibrate'),
@@ -1108,6 +1116,47 @@ elements.passcodeClear.addEventListener('click', () => {
     if (!confirm('Clear this device’s passcode? Automation will not be able to unlock a locked phone.'))
         return;
     void patchPasscode('', 'Clearing…', 'Passcode cleared.');
+});
+elements.openPorts.addEventListener('click', () => {
+    elements.portsResult.textContent = '';
+    elements.portsDialog.showModal();
+});
+elements.closePorts.addEventListener('click', () => elements.portsDialog.close());
+// Same range the server draws from for new phones; the server still rejects a clash.
+elements.portsRandom.addEventListener('click', () => {
+    const wda = 20000 + Math.floor(Math.random() * 11999);
+    elements.wdaRemotePort.value = String(wda);
+    elements.mjpegRemotePort.value = String(wda + 1);
+    elements.portsResult.textContent = 'Not saved yet.';
+});
+elements.portsForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const wdaRemotePort = Number(elements.wdaRemotePort.value);
+    const mjpegRemotePort = Number(elements.mjpegRemotePort.value);
+    if (![wdaRemotePort, mjpegRemotePort].every((port) => Number.isInteger(port) && port >= 1024 && port <= 65535)) {
+        elements.portsResult.textContent = 'Ports must be whole numbers from 1024 to 65535.';
+        return;
+    }
+    if (wdaRemotePort === mjpegRemotePort) {
+        elements.portsResult.textContent = 'The two ports must differ.';
+        return;
+    }
+    elements.portsResult.textContent = 'Saving…';
+    try {
+        const response = await fetch(`/api/devices/${encodeURIComponent(udid)}`, {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ wdaRemotePort, mjpegRemotePort }),
+        });
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data.error ?? `Request failed (${response.status})`);
+        }
+        elements.portsResult.textContent = 'Saved. WDA restarts on the new ports in a few seconds.';
+    }
+    catch (error) {
+        elements.portsResult.textContent = errorMessage(error);
+    }
 });
 elements.removeDevice.addEventListener('click', async () => {
     elements.removeDevice.disabled = true;

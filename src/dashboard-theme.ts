@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 
 import type { DashboardTheme } from './api/app.js';
-import type { RegisteredDevice } from './devices/registry.js';
+import { phonePorts, type RegisteredDevice } from './devices/registry.js';
 import { accountNiches } from './tiktok/niche.js';
 
 const pluginId = 'com.git-agni.tiktok';
@@ -26,6 +26,8 @@ export const defaultDashboardTheme: DashboardTheme = {
             // Inside a <script type="application/json">: escaping "<" keeps a
             // niche containing "</script>" from closing the tag.
             .replaceAll('__TIKTOK_NICHES_JSON__', JSON.stringify(accountNiches(device)).replaceAll('<', '\\u003c'))
-            .replaceAll('__DEVICE_HASPASSCODE__', device.passcode ? '· set' : '· not set');
+            .replaceAll('__DEVICE_HASPASSCODE__', device.passcode ? '· set' : '· not set')
+            .replaceAll('__DEVICE_WDA_REMOTE_PORT__', String(phonePorts(device).wda))
+            .replaceAll('__DEVICE_MJPEG_REMOTE_PORT__', String(phonePorts(device).mjpeg));
     },
 };
