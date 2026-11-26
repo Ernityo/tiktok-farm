@@ -12,7 +12,7 @@ import { appLaunchSettleMs, performSwipe, swipeCoordinates, tapCoordinate } from
 import { profileSwipe, resolveSwipeStyle, type SwipeProfile, type SwipeStyle } from '../devices/swipe-profiles.js';
 import { adFromWords, detectAdStrict, readCaptionWords, type AdDetection } from './ad-detection.js';
 import {
-    engagementAllowance, FULL_WATCH_CAP_MS, sameCaption, SHOP_POST, swipeRecord, timePlan, type AgentPlan, type SwipeRecord, type TimedPlan,
+    engagementAllowance, finalLingerMs, FULL_WATCH_CAP_MS, sameCaption, sessionLengthMs, SHOP_POST, swipeRecord, timePlan, type AgentPlan, type SwipeRecord, type TimedPlan,
 } from './agent-plan.js';
 import { ReelWatchTracker } from '../facebook/reels-progress.js';
 import { PROFILES, type Personality } from './doomscroll-profile.js';
@@ -232,7 +232,7 @@ export class TikTokAgentSession {
                 udid: device.udid, account, niche, personality: options.personality, minutes: options.minutes, startedAt: new Date().toISOString(),
             }, null, 2));
             const session = new TikTokAgentSession(
-                driver, remoteControl, device, tiktok, scale, Date.now() + options.minutes * 60_000, logDirectory, account, niche,
+                driver, remoteControl, device, tiktok, scale, Date.now() + sessionLengthMs(options.minutes), logDirectory, account, niche,
                 options.personality, swipeStyle,
             );
             const observation = await session.observe(Date.now());
@@ -335,7 +335,7 @@ export class TikTokAgentSession {
         this.busy = true;
         try {
             const decidedAt = Date.now();
-            const timed: TimedPlan = timePlan(plan, this.remainingMs, this.personality, {
+            const timed: TimedPlan = timePlan(plan, this.personality, {
                 judged: this.decisionMs.length, likes: this.likes, saves: this.saves,
             });
             this.decisionMs.push(decidedAt - video.observedAt);
@@ -375,16 +375,20 @@ export class TikTokAgentSession {
                 this.skips += 1;
                 this.skipScreenMs.push(Date.now() - video.arrivedAt);
             }
-            const swipe = await this.swipe(ad.isAd || SHOP_POST.test(video.caption));
+            // Time is up: the last video is not swiped away; it stays on screen a
+            // moment, like someone putting the phone down, then the app closes.
+            const last = this.remainingMs <= 0;
+            const swipe = last ? (await sleep(finalLingerMs()), null) : await this.swipe(ad.isAd || SHOP_POST.test(video.caption));
             const arrivedAt = Date.now();
 
             await appendFile(path.join(this.logDirectory, 'decisions.jsonl'), `${JSON.stringify({
                 video: video.index, caption: video.caption, isAd: ad.isAd, plan, timed, watched, liked, saved,
                 decisionMs: decidedAt - video.observedAt, screenMs: arrivedAt - video.arrivedAt, swipe,
                 ...(video.retrySwipes.length ? { retrySwipes: video.retrySwipes } : {}), ...logExtra,
+                ...(last ? { last: true } : {}),
             })}\n`).catch(() => undefined);
 
-            if (this.remainingMs <= 0) return { summary: await this.stop('completed') };
+            if (last) return { summary: await this.stop('completed') };
             return { observation: await this.observe(arrivedAt, video.caption) };
         } finally {
             this.busy = false;
@@ -400,7 +404,7 @@ export class TikTokAgentSession {
     private async watchToEnd(decidedAt: number, timedWatchMs: number): Promise<
         { by: 'progress'; completed: boolean; lastProgress: number; videoMs?: number } | { by: 'timer' }
     > {
-        const capEnd = Math.min(decidedAt + FULL_WATCH_CAP_MS[this.personality], this.deadline);
+        const capEnd = decidedAt + FULL_WATCH_CAP_MS[this.personality];
         const tracker = new ReelWatchTracker();
         let lastProgress: number | undefined;
         let misses = 0;

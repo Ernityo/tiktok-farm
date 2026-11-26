@@ -12,7 +12,7 @@ import { profileSwipe, resolveSwipeStyle, type SwipeProfile, type SwipeStyle } f
 import { ReelWatchTracker } from '../facebook/reels-progress.js';
 import { appLaunchSettleMs, performSwipe, tapCoordinate } from '../tiktok/actions.js';
 import { adFromWords, readCaptionWords } from '../tiktok/ad-detection.js';
-import { engagementAllowance, FULL_WATCH_CAP_MS, swipeRecord, timePlan, type AgentPlan, type SwipeRecord } from '../tiktok/agent-plan.js';
+import { engagementAllowance, finalLingerMs, FULL_WATCH_CAP_MS, sessionLengthMs, swipeRecord, timePlan, type AgentPlan, type SwipeRecord } from '../tiktok/agent-plan.js';
 import { envInteger, median, resolveDevice, type Observation, type SessionSummary } from '../tiktok/agent-session.js';
 import { PROFILES, type Personality } from '../tiktok/doomscroll-profile.js';
 import { nicheForAccount, normalizeHandle, type Niche } from '../tiktok/niche.js';
@@ -196,7 +196,7 @@ export class ReelsAgentSession {
                 startedAt: new Date().toISOString(),
             }, null, 2));
             const session = new ReelsAgentSession(
-                adapter, context, Date.now() + options.minutes * 60_000, logDirectory, account, niche, options.personality, swipeStyle,
+                adapter, context, Date.now() + sessionLengthMs(options.minutes), logDirectory, account, niche, options.personality, swipeStyle,
             );
             return { session, observation: await session.observe(Date.now()) };
         } catch (error) {
@@ -274,7 +274,7 @@ export class ReelsAgentSession {
         try {
             this.advancedOnItsOwn = false;
             const decidedAt = Date.now();
-            const timed = timePlan({ ...plan, save: false }, this.remainingMs, this.personality, {
+            const timed = timePlan({ ...plan, save: false }, this.personality, {
                 judged: this.decisionMs.length, likes: this.likes, saves: 0,
             });
             this.decisionMs.push(decidedAt - video.observedAt);
@@ -306,18 +306,22 @@ export class ReelsAgentSession {
                 const now = await this.adapter.currentReelId(this.context).catch(() => undefined);
                 if (now && now !== video.reelId) this.advancedOnItsOwn = true;
             }
+            // Time is up: the last Reel is not swiped away; it stays on screen a
+            // moment, like someone putting the phone down, then the app closes.
+            const last = this.remainingMs <= 0;
             let swipe: SwipeRecord | null = null;
-            if (this.advancedOnItsOwn) console.log('[agent] already on the next Reel; not swiping');
+            if (last) await sleep(finalLingerMs());
+            else if (this.advancedOnItsOwn) console.log('[agent] already on the next Reel; not swiping');
             else swipe = await this.swipe();
             const arrivedAt = Date.now();
 
             await appendFile(path.join(this.logDirectory, 'decisions.jsonl'), `${JSON.stringify({
                 video: video.index, caption: video.caption, isAd: video.isAd, reelId: video.reelId, plan, timed, watched, liked,
                 advancedOnItsOwn: this.advancedOnItsOwn, swipe, decisionMs: decidedAt - video.observedAt, screenMs: arrivedAt - video.arrivedAt,
-                ...logExtra,
+                ...logExtra, ...(last ? { last: true } : {}),
             })}\n`).catch(() => undefined);
 
-            if (this.remainingMs <= 0) return { summary: await this.stop('completed') };
+            if (last) return { summary: await this.stop('completed') };
             return { observation: await this.observe(arrivedAt) };
         } finally {
             this.busy = false;
@@ -326,7 +330,7 @@ export class ReelsAgentSession {
 
     /** Keeps a `full` Reel on screen until it loops (progress), the app moves on, or the cap. */
     private async watchToEnd(decidedAt: number, timedWatchMs: number, reelId: string | undefined): Promise<WatchOutcome> {
-        const capEnd = Math.min(decidedAt + FULL_WATCH_CAP_MS[this.personality], this.deadline);
+        const capEnd = decidedAt + FULL_WATCH_CAP_MS[this.personality];
         const tracker = new ReelWatchTracker();
         let lastProgress: number | undefined;
         let misses = 0;

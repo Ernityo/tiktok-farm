@@ -86,19 +86,18 @@ function jitter(value: number, random: () => number): number {
 }
 
 /**
- * Turns a plan into timings. Skipped videos are never liked or saved, and
- * every value is clamped so the whole thing ends by `remainingMs` (the
- * session deadline).
+ * Turns a plan into timings. Skipped videos are never liked or saved. The
+ * session deadline doesn't shorten a video: it only decides whether another
+ * one starts, so the last video plays out like any other.
  */
 export function timePlan(
     plan: AgentPlan,
-    remainingMs: number,
     personality: Personality = 'casual',
     soFar: EngagementSoFar = { judged: 0, likes: 0, saves: 0 },
     random: () => number = Math.random,
 ): TimedPlan {
     const [min, max] = WATCH_RANGES[personality][plan.watch];
-    let watchMs = Math.max(0, Math.min(between(min, max, random), remainingMs));
+    let watchMs = between(min, max, random);
     if (plan.watch === 'skip') return { watchMs };
 
     // The agent picks which videos deserve a like/save; the personality caps
@@ -116,17 +115,27 @@ export function timePlan(
         const after = (likeAtMs ?? 0) + MIN_ACTION_GAP_MS;
         saveAtMs = Math.max(after, between(Math.round(watchMs * 0.4), Math.round(watchMs * 0.8), random));
     }
-    // A planned action must fit before the swipe: stretch the watch for it,
-    // within the session deadline.
+    // A planned action must fit before the swipe: stretch the watch for it.
     const lastAction = Math.max(likeAtMs ?? -Infinity, saveAtMs ?? -Infinity);
-    if (Number.isFinite(lastAction)) watchMs = Math.min(Math.max(watchMs, lastAction + MIN_ACTION_GAP_MS), remainingMs);
-    if (likeAtMs !== undefined && likeAtMs > watchMs) likeAtMs = undefined;
-    if (saveAtMs !== undefined && saveAtMs > watchMs) saveAtMs = undefined;
+    if (Number.isFinite(lastAction)) watchMs = Math.max(watchMs, lastAction + MIN_ACTION_GAP_MS);
     return {
         watchMs,
         ...(likeAtMs !== undefined ? { likeAtMs } : {}),
         ...(saveAtMs !== undefined ? { saveAtMs } : {}),
     };
+}
+
+/** A session lasts the asked minutes give or take this share, so runs don't all end on the minute. */
+const SESSION_LENGTH_JITTER = 0.15;
+
+/** Session length in ms for `--minutes`: e.g. 10 min becomes anything from 8.5 to 11.5 min. */
+export function sessionLengthMs(minutes: number, random: () => number = Math.random): number {
+    return Math.round(minutes * 60_000 * (1 - SESSION_LENGTH_JITTER + random() * 2 * SESSION_LENGTH_JITTER));
+}
+
+/** How long the last video stays on screen after its plan is done, before the app closes (no swipe). */
+export function finalLingerMs(random: () => number = Math.random): number {
+    return between(1500, 5000, random);
 }
 
 /** TikTok Shop posts: a product card sits where the normal swipe starts, and they are never on-niche. */

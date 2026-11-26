@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { engagementAllowance, sameCaption, swipeRecord, timePlan, WATCH_RANGES, withinBudget } from '../src/tiktok/agent-plan.js';
+import { engagementAllowance, finalLingerMs, sameCaption, sessionLengthMs, swipeRecord, timePlan, WATCH_RANGES, withinBudget } from '../src/tiktok/agent-plan.js';
 import { parseReply, systemPrompt, userText } from '../src/tiktok/agent-model.js';
 import { accountNiches, nicheForAccount, parseNiche, pruneNiches } from '../src/tiktok/niche.js';
 import type { RegisteredDevice } from '../src/types.js';
@@ -40,7 +40,7 @@ function sequence(...values: number[]): () => number {
 }
 
 test('skipped videos are never liked or saved', () => {
-    const timed = timePlan({ onNiche: 0.1, watch: 'skip', likeAtMs: 1000, save: true }, 60_000, 'engaged', undefined, () => 0.5);
+    const timed = timePlan({ onNiche: 0.1, watch: 'skip', likeAtMs: 1000, save: true }, 'engaged', undefined, () => 0.5);
     assert.deepEqual(Object.keys(timed), ['watchMs']);
     const [min, max] = WATCH_RANGES.engaged.skip;
     assert.ok(timed.watchMs >= min && timed.watchMs <= max);
@@ -49,7 +49,7 @@ test('skipped videos are never liked or saved', () => {
 test('likes and saves fit before the swipe, save after like', () => {
     for (let seed = 0; seed < 50; seed += 1) {
         const random = sequence(seed / 50, 0.99, 0.3, 0.99, 0.7);
-        const timed = timePlan({ onNiche: 0.9, watch: 'short', likeAtMs: 9000, save: true }, 60_000, 'engaged', undefined, random);
+        const timed = timePlan({ onNiche: 0.9, watch: 'short', likeAtMs: 9000, save: true }, 'engaged', undefined, random);
         if (timed.likeAtMs !== undefined) assert.ok(timed.likeAtMs < timed.watchMs);
         if (timed.saveAtMs !== undefined) {
             assert.ok(timed.saveAtMs < timed.watchMs);
@@ -60,14 +60,21 @@ test('likes and saves fit before the swipe, save after like', () => {
 
 test('a planned like is sometimes dropped', () => {
     // random() < drop chance on the like draw.
-    const timed = timePlan({ onNiche: 0.9, watch: 'full', likeAtMs: 3000 }, 60_000, 'engaged', undefined, sequence(0.5, 0.01));
+    const timed = timePlan({ onNiche: 0.9, watch: 'full', likeAtMs: 3000 }, 'engaged', undefined, sequence(0.5, 0.01));
     assert.equal(timed.likeAtMs, undefined);
 });
 
-test('timings never run past the session deadline', () => {
-    const timed = timePlan({ onNiche: 0.9, watch: 'full', likeAtMs: 5000, save: true }, 2000, 'engaged', undefined, () => 0.99);
-    assert.ok(timed.watchMs <= 2000);
-    assert.equal(timed.likeAtMs, undefined);
+test('a planned like is never cut short: the watch stretches to fit it', () => {
+    const timed = timePlan({ onNiche: 0.9, watch: 'short', likeAtMs: 20_000 }, 'skimmer', undefined, () => 0.99);
+    assert.ok(timed.likeAtMs !== undefined && timed.likeAtMs < timed.watchMs);
+});
+
+test('session length varies around the asked minutes', () => {
+    assert.equal(sessionLengthMs(10, () => 0), 510_000);
+    assert.equal(sessionLengthMs(10, () => 0.5), 600_000);
+    assert.equal(sessionLengthMs(10, () => 1), 690_000);
+    const linger = finalLingerMs(() => 0.5);
+    assert.ok(linger >= 1500 && linger <= 5000);
 });
 
 test('the personality caps likes and saves over the session', () => {
@@ -77,7 +84,7 @@ test('the personality caps likes and saves over the session', () => {
     // The first on-niche video can always be liked.
     assert.equal(withinBudget(0, 1, 0.08), true);
     const timed = timePlan(
-        { onNiche: 0.9, watch: 'full', likeAtMs: 3000, save: true }, 60_000, 'casual', { judged: 9, likes: 2, saves: 1 }, () => 0.5,
+        { onNiche: 0.9, watch: 'full', likeAtMs: 3000, save: true }, 'casual', { judged: 9, likes: 2, saves: 1 }, () => 0.5,
     );
     assert.equal(timed.likeAtMs, undefined);
     assert.equal(timed.saveAtMs, undefined);
@@ -86,7 +93,7 @@ test('the personality caps likes and saves over the session', () => {
 test('a casual agent following every like plan lands near 18%', () => {
     let likes = 0;
     for (let judged = 0; judged < 100; judged += 1) {
-        const timed = timePlan({ onNiche: 0.9, watch: 'full', likeAtMs: 3000 }, 60_000, 'casual', { judged, likes, saves: 0 }, () => 0.5);
+        const timed = timePlan({ onNiche: 0.9, watch: 'full', likeAtMs: 3000 }, 'casual', { judged, likes, saves: 0 }, () => 0.5);
         if (timed.likeAtMs !== undefined) likes += 1;
     }
     assert.ok(likes >= 16 && likes <= 19, `likes=${likes}`);
