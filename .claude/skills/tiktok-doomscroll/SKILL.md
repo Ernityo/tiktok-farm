@@ -13,4 +13,6 @@ description: Agentic TikTok doomscroll that locks an account's niche — a visio
 
 Prerequisites, if the start fails: `OPENROUTER_API_KEY` in `.env`, Appium and the WDA service running, the phone connected and not used by a scheduled task, TikTok already on that account (the session does not switch accounts), the account listed under the device's Accounts, and a niche saved for it (device page → Niches).
 
+Facebook Reels and Instagram Reels work the same way: add `--app facebook` or `--app instagram`. There `--account` only picks the niche (that app's niche for the handle, else the TikTok niche of the same handle), or pass `--niche "..."`. They like but never save. Facebook needs a measured layout (iPhone XR only so far); Instagram works on any phone.
+
 The older Claude Code version (the `tiktok-scroller` subagent on Haiku through the `tiktok-agent` MCP tools) still works but is about 4× slower per decision.

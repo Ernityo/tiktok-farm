@@ -1,8 +1,12 @@
-// Agentic TikTok doomscroll driven by a vision model on OpenRouter instead of
-// a Claude Code session. Ads and shop posts are skipped in code; every other
-// video is judged by the model in one stateless call.
+// Agentic doomscroll (TikTok, Facebook Reels or Instagram Reels) driven by a
+// vision model on OpenRouter instead of a Claude Code session. Ads, shop
+// posts and non-Reel cards are skipped in code; every other video is judged
+// by the model in one stateless call.
 //
-//   npm run agent:scroll -- --account @handle --minutes 10 [--personality casual] [--language French] [--udid ...] [--niche "..."] [--swipe-style right-thumb|left-thumb|left-index|right-index|fixed]
+//   npm run agent:scroll -- [--app tiktok|facebook|instagram] --account @handle --minutes 10 [--personality casual] [--language French] [--udid ...] [--niche "..."] [--swipe-style right-thumb|left-thumb|left-index|right-index|fixed]
+//
+// Facebook/Instagram: --account only picks the niche (that app's niche for the
+// handle, else its TikTok niche); or pass --niche. They like but never save.
 //
 // --language is the language videos must be in (the phone's language: TikTok
 // shows a translation link on anything else); other videos are skipped.
@@ -11,11 +15,14 @@
 
 import { parseArgs } from 'node:util';
 
-import { DEFAULT_AGENT_MODEL, OpenRouterDecider, systemPrompt, type ModelDecision } from './agent-model.js';
+import { AGENT_APPS, DEFAULT_AGENT_MODEL, OpenRouterDecider, systemPrompt, type AgentApp, type ModelDecision } from './agent-model.js';
 import { autoSkipReason, type AgentPlan } from './agent-plan.js';
 import { TikTokAgentSession, type Observation, type SessionSummary } from './agent-session.js';
 import type { Personality } from './doomscroll-profile.js';
 import { SWIPE_STYLES, type SwipeStyle } from '../devices/swipe-profiles.js';
+import { ReelsAgentSession } from '../agent/reels-session.js';
+import { facebookAdapter } from '../facebook/agent-adapter.js';
+import { instagramAdapter } from '../instagram/agent-adapter.js';
 
 const PERSONALITIES: readonly Personality[] = ['skimmer', 'casual', 'engaged'];
 /** Consecutive model failures before the session is stopped. */
@@ -23,6 +30,7 @@ const MAX_MODEL_FAILURES = 3;
 
 const { values } = parseArgs({
     options: {
+        app: { type: 'string', default: 'tiktok' },
         account: { type: 'string' },
         minutes: { type: 'string', default: '10' },
         personality: { type: 'string', default: 'casual' },
@@ -36,6 +44,9 @@ const swipeStyle = values['swipe-style'] as SwipeStyle | undefined;
 if (swipeStyle !== undefined && !(SWIPE_STYLES as readonly string[]).includes(swipeStyle)) {
     throw new Error(`--swipe-style must be one of ${SWIPE_STYLES.join(', ')}`);
 }
+
+const app = values.app as AgentApp;
+if (!(AGENT_APPS as readonly string[]).includes(app)) throw new Error(`--app must be one of ${AGENT_APPS.join(', ')}`);
 
 const minutes = Number.parseInt(values.minutes, 10);
 if (!Number.isInteger(minutes) || minutes < 1 || minutes > 60) throw new Error('--minutes must be 1-60');
@@ -58,16 +69,19 @@ function describe(plan: AgentPlan): string {
     return `${plan.watch.padEnd(5)} ${plan.onNiche.toFixed(2)}${plan.likeAtMs ? ' like' : ''}${plan.save ? ' save' : ''}`;
 }
 
-const { session, observation: first } = await TikTokAgentSession.start({
+const startOptions = {
     minutes,
     personality,
     ...(values.account ? { account: values.account } : {}),
     ...(values.udid ? { udid: values.udid } : {}),
     ...(values.niche ? { niche: { description: values.niche, keywords: [], avoid: [] } } : {}),
     ...(swipeStyle ? { swipeStyle } : {}),
-});
-const decider = new OpenRouterDecider(apiKey, model, systemPrompt(session.niche, personality, values.language));
-console.log(`[scroll] ${session.account ?? 'current account'} · ${personality} · ${minutes} min · ${model}\n[scroll] niche: ${session.niche.description}${session.niche.avoid.length ? ` · avoid: ${session.niche.avoid.join(', ')}` : ''} · language: ${values.language}`);
+};
+const { session, observation: first } = app === 'tiktok'
+    ? await TikTokAgentSession.start(startOptions)
+    : await ReelsAgentSession.start({ ...startOptions, adapter: app === 'facebook' ? facebookAdapter : instagramAdapter });
+const decider = new OpenRouterDecider(apiKey, model, systemPrompt(session.niche, personality, values.language, app));
+console.log(`[scroll] ${app} · ${session.account ?? 'current account'} · ${personality} · ${minutes} min · ${model}\n[scroll] niche: ${session.niche.description}${session.niche.avoid.length ? ` · avoid: ${session.niche.avoid.join(', ')}` : ''} · language: ${values.language}`);
 
 let stopping = false;
 process.once('SIGINT', () => {
@@ -84,7 +98,7 @@ try {
             summary = await session.stop('stopped');
             break;
         }
-        const skipReason = autoSkipReason(observation);
+        const skipReason = observation.autoSkip ?? autoSkipReason(observation);
         let plan: AgentPlan;
         let extra: Record<string, unknown>;
         if (skipReason) {

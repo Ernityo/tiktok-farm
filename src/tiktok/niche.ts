@@ -52,15 +52,15 @@ export function parseNiche(value: JsonValue | undefined): Niche {
     return { description, keywords: stringList(value.keywords, 'keywords'), avoid: stringList(value.avoid, 'avoid') };
 }
 
-function storedNiches(device: RegisteredDevice | undefined): JsonObject {
-    const value = device?.pluginData[TIKTOK_PLUGIN_ID]?.niches;
+function storedNiches(device: RegisteredDevice | undefined, pluginId: string): JsonObject {
+    const value = device?.pluginData[pluginId]?.niches;
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
 /** Every valid niche on the device, keyed by "@handle". Invalid entries are skipped. */
-export function accountNiches(device: RegisteredDevice | undefined): Record<string, Niche> {
+export function accountNiches(device: RegisteredDevice | undefined, pluginId = TIKTOK_PLUGIN_ID): Record<string, Niche> {
     const result: Record<string, Niche> = {};
-    for (const [handle, value] of Object.entries(storedNiches(device))) {
+    for (const [handle, value] of Object.entries(storedNiches(device, pluginId))) {
         try {
             result[normalizeHandle(handle)] = parseNiche(value);
         } catch {
@@ -70,8 +70,8 @@ export function accountNiches(device: RegisteredDevice | undefined): Record<stri
     return result;
 }
 
-export function nicheForAccount(device: RegisteredDevice | undefined, handle: string): Niche | undefined {
-    return accountNiches(device)[normalizeHandle(handle)];
+export function nicheForAccount(device: RegisteredDevice | undefined, handle: string, pluginId = TIKTOK_PLUGIN_ID): Niche | undefined {
+    return accountNiches(device, pluginId)[normalizeHandle(handle)];
 }
 
 /** Drops niches of accounts that are no longer configured on the device. */

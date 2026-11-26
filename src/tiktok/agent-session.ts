@@ -11,7 +11,9 @@ import type { RegisteredDevice } from '../devices/registry.js';
 import { appLaunchSettleMs, performSwipe, swipeCoordinates, tapCoordinate } from './actions.js';
 import { profileSwipe, resolveSwipeStyle, type SwipeProfile, type SwipeStyle } from '../devices/swipe-profiles.js';
 import { adFromWords, detectAdStrict, readCaptionWords, type AdDetection } from './ad-detection.js';
-import { engagementAllowance, FULL_WATCH_CAP_MS, sameCaption, SHOP_POST, timePlan, type AgentPlan, type TimedPlan } from './agent-plan.js';
+import {
+    engagementAllowance, FULL_WATCH_CAP_MS, sameCaption, SHOP_POST, swipeRecord, timePlan, type AgentPlan, type SwipeRecord, type TimedPlan,
+} from './agent-plan.js';
 import { ReelWatchTracker } from '../facebook/reels-progress.js';
 import { PROFILES, type Personality } from './doomscroll-profile.js';
 import { detectEngagementControls, type EngagementControls } from './engagement-controls.js';
@@ -25,7 +27,7 @@ import { readTikTokProgress } from './video-progress.js';
 // this class carries out its plan with the same detectors and humanized
 // gestures as the programmatic doomscroll.
 
-function envInteger(name: string, fallback: number, min: number, max: number): number {
+export function envInteger(name: string, fallback: number, min: number, max: number): number {
     const raw = process.env[name];
     if (raw === undefined || raw === '') return fallback;
     const value = Number.parseInt(raw, 10);
@@ -78,6 +80,8 @@ export interface Observation {
     remainingMs: number;
     /** Likes/saves done so far, and how many the rate allows if this video is liked/saved. */
     engagement: { likes: number; likesAllowed: number; saves: number; savesAllowed: number };
+    /** Set when the session already knows to skip this video without asking the model (e.g. 'card', 'foreign'). */
+    autoSkip?: string;
 }
 
 export interface SessionSummary {
@@ -111,15 +115,17 @@ interface CurrentVideo {
     ad: AdDetection;
     /** The stricter second ad pass, running while the agent thinks. */
     strictAd: Promise<AdDetection>;
+    /** Extra swipes it took to get here because the previous swipe didn't move the feed on. */
+    retrySwipes: SwipeRecord[];
 }
 
-function median(values: readonly number[]): number | undefined {
+export function median(values: readonly number[]): number | undefined {
     if (!values.length) return undefined;
     const sorted = [...values].sort((a, b) => a - b);
     return sorted[Math.floor(sorted.length / 2)];
 }
 
-function resolveDevice(devices: readonly RegisteredDevice[], udid: string | undefined): RegisteredDevice {
+export function resolveDevice(devices: readonly RegisteredDevice[], udid: string | undefined): RegisteredDevice {
     const wanted = udid ?? process.env.IOS_UDID;
     if (wanted) {
         const device = devices.find((entry) => entry.udid === wanted);
@@ -268,11 +274,12 @@ export class TikTokAgentSession {
 
     private async observe(arrivedAt: number, previousCaption?: string): Promise<Observation> {
         let { screenshot, words, image, captionImage, caption } = await this.capture();
+        const retrySwipes: SwipeRecord[] = [];
         // A swipe can fail to move the feed on (seen on TikTok Shop posts):
         // the same video is still there, so swipe again from higher up.
         for (let retry = 1; retry <= MAX_SWIPE_RETRIES && previousCaption && sameCaption(previousCaption, caption); retry++) {
             console.log(`[agent] swipe did not move the feed on; swiping again (${retry}/${MAX_SWIPE_RETRIES})`);
-            await this.swipe(true);
+            retrySwipes.push(await this.swipe(true));
             arrivedAt = Date.now();
             ({ screenshot, words, image, captionImage, caption } = await this.capture());
         }
@@ -285,6 +292,7 @@ export class TikTokAgentSession {
             caption,
             ad,
             strictAd: ad.isAd ? Promise.resolve(ad) : detectAdStrict(screenshot).catch(() => ({ isAd: false })),
+            retrySwipes,
         };
         const stem = path.join(this.logDirectory, String(this.videos).padStart(4, '0'));
         await Promise.all([
@@ -367,12 +375,13 @@ export class TikTokAgentSession {
                 this.skips += 1;
                 this.skipScreenMs.push(Date.now() - video.arrivedAt);
             }
-            await this.swipe(ad.isAd || SHOP_POST.test(video.caption));
+            const swipe = await this.swipe(ad.isAd || SHOP_POST.test(video.caption));
             const arrivedAt = Date.now();
 
             await appendFile(path.join(this.logDirectory, 'decisions.jsonl'), `${JSON.stringify({
                 video: video.index, caption: video.caption, isAd: ad.isAd, plan, timed, watched, liked, saved,
-                decisionMs: decidedAt - video.observedAt, screenMs: arrivedAt - video.arrivedAt, ...logExtra,
+                decisionMs: decidedAt - video.observedAt, screenMs: arrivedAt - video.arrivedAt, swipe,
+                ...(video.retrySwipes.length ? { retrySwipes: video.retrySwipes } : {}), ...logExtra,
             })}\n`).catch(() => undefined);
 
             if (this.remainingMs <= 0) return { summary: await this.stop('completed') };
@@ -425,17 +434,15 @@ export class TikTokAgentSession {
         return { by: 'progress', completed: false, lastProgress };
     }
 
-    private async swipe(isAd: boolean): Promise<void> {
-        if (!isAd && this.swipeStyle) {
-            await performSwipe(this.driver, profileSwipe(this.swipeStyle));
-            return;
-        }
+    private async swipe(isAd: boolean): Promise<SwipeRecord> {
+        if (!isAd && this.swipeStyle) return swipeRecord(this.swipeStyle, await performSwipe(this.driver, profileSwipe(this.swipeStyle)));
         const { x, startY, adStartY, endY, durationMs } = this.coordinates.swipe;
         // Ads put forms and CTA buttons where the normal swipe starts, so the
         // swipe starts higher on ads, at the same finger speed.
         const fromY = isAd ? adStartY : startY;
         const duration = isAd ? Math.round(durationMs * (adStartY - endY) / (startY - endY)) : durationMs;
-        await swipeCoordinates(this.driver, { x, y: fromY }, { x, y: endY }, duration, isAd ? { startRadius: { x: 18, y: 6 } } : {});
+        const swipe = await swipeCoordinates(this.driver, { x, y: fromY }, { x, y: endY }, duration, isAd ? { startRadius: { x: 18, y: 6 } } : {});
+        return swipeRecord(isAd ? 'ad' : 'fixed', swipe);
     }
 
     /** Ends the session (idempotent) and returns its summary. */

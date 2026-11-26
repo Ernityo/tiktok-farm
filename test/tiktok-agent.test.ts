@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { engagementAllowance, sameCaption, timePlan, WATCH_RANGES, withinBudget } from '../src/tiktok/agent-plan.js';
-import { parseReply, systemPrompt } from '../src/tiktok/agent-model.js';
+import { engagementAllowance, sameCaption, swipeRecord, timePlan, WATCH_RANGES, withinBudget } from '../src/tiktok/agent-plan.js';
+import { parseReply, systemPrompt, userText } from '../src/tiktok/agent-model.js';
 import { accountNiches, nicheForAccount, parseNiche, pruneNiches } from '../src/tiktok/niche.js';
 import type { RegisteredDevice } from '../src/types.js';
 
@@ -140,4 +140,37 @@ test('a video not in the account language is skipped whatever the model planned'
     const { plan, foreign } = parseReply('{"foreign": true, "on_niche": 0.95, "watch": "full", "like": true}');
     assert.equal(foreign, true);
     assert.deepEqual(plan, { onNiche: 0, watch: 'skip', likeAtMs: null, save: false });
+});
+
+test('facebook and instagram prompts name the feed and never ask for saves', () => {
+    const niche = { description: 'cats', keywords: [], avoid: [] };
+    for (const [app, feed] of [['facebook', 'Facebook Reels feed'], ['instagram', 'Instagram Reels feed']] as const) {
+        const prompt = systemPrompt(niche, 'casual', 'French', app);
+        assert.match(prompt, new RegExp(feed));
+        assert.doesNotMatch(prompt, /save/i);
+        assert.match(prompt, /Sponsoris/);
+    }
+    assert.match(systemPrompt(niche, 'casual', 'French', 'facebook'), /Afficher l'original/);
+    assert.match(systemPrompt(niche, 'casual'), /"save": true\|false/);
+});
+
+test('userText leaves saves out when none are allowed', () => {
+    const base = { video: 1, image: Buffer.alloc(0), caption: 'x', isAd: false };
+    assert.match(userText({ ...base, engagement: { likes: 1, likesAllowed: 2, saves: 0, savesAllowed: 1 } }), /saves 0\/1/);
+    assert.doesNotMatch(userText({ ...base, engagement: { likes: 1, likesAllowed: 2, saves: 0, savesAllowed: 0 } }), /saves/);
+});
+
+test('nicheForAccount reads another plugin\'s niches when asked', () => {
+    const phone = {
+        name: 'phone', udid: 'u1',
+        pluginData: { 'com.git-agni.facebook': { niches: { '@a': { description: 'fb niche' } } } },
+    } as unknown as RegisteredDevice;
+    assert.equal(nicheForAccount(phone, '@a', 'com.git-agni.facebook')?.description, 'fb niche');
+    assert.equal(nicheForAccount(phone, '@a'), undefined);
+});
+
+test('swipeRecord logs where the finger went and the upward distance', () => {
+    assert.deepEqual(swipeRecord('right-thumb', { start: { x: 300, y: 480 }, end: { x: 320, y: 370 }, durationMs: 150 }), {
+        style: 'right-thumb', from: { x: 300, y: 480 }, to: { x: 320, y: 370 }, dy: 110, ms: 150,
+    });
 });

@@ -155,3 +155,24 @@ export function sameCaption(a: string, b: string): boolean {
     for (const token of left) if (right.has(token)) shared += 1;
     return shared / (left.size + right.size - shared) >= 0.75;
 }
+
+/** One swipe as written to decisions.jsonl: where the finger went, in points. */
+export interface SwipeRecord {
+    /** 'right-thumb' etc. for a recorded style, 'fixed' or 'ad' for the coordinate swipe. */
+    style: string;
+    from: { x: number; y: number };
+    to: { x: number; y: number };
+    /** Upward distance (from.y - to.y). */
+    dy: number;
+    ms: number;
+}
+
+export function swipeRecord(style: string, swipe: { start: { x: number; y: number }; end: { x: number; y: number }; durationMs: number }): SwipeRecord {
+    return {
+        style,
+        from: { x: swipe.start.x, y: swipe.start.y },
+        to: { x: swipe.end.x, y: swipe.end.y },
+        dy: swipe.start.y - swipe.end.y,
+        ms: swipe.durationMs,
+    };
+}
