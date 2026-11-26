@@ -3,8 +3,8 @@ import test from 'node:test';
 
 import type { PointerAction } from '../src/devices/humanize.js';
 import {
-    describeKeyboard, keyIntervalMs, keyPressPoint, shiftKey, spaceKey, typeOnKeyboard,
-    type KeyboardDevice, type KeyboardKey,
+    cachedKeyboard, describeKeyboard, keyIntervalMs, keyPressPoint, shiftKey, spaceKey, typeOnKeyboard,
+    type KeyboardDevice, type KeyboardKey, type KeyboardLayerCache,
 } from '../src/devices/typing.js';
 
 function seeded(seed: number): () => number {
@@ -176,4 +176,53 @@ test('far keys take longer than near ones on average, and presses stay inside th
         const point = keyPressPoint(rect, random);
         assert.ok(point.x >= rect.x && point.x <= rect.x + rect.width && point.y >= rect.y && point.y <= rect.y + rect.height);
     }
+});
+
+test('the keyboard cache reads each layer once, then recognises it with one lookup', async () => {
+    const cache: KeyboardLayerCache = { layers: [] };
+    const text = 'Salut, 2 fois. Oui';
+    for (const seed of [1, 2]) {
+        const device = new FakeKeyboard();
+        let fullReads = 0;
+        const read = device.readKeyboard.bind(device);
+        device.readKeyboard = async () => { fullReads += 1; return read(); };
+        await typeOnKeyboard(cachedKeyboard(device, cache), text, options(device, seed, { typoRate: 0 }));
+        assert.equal(device.text, text);
+        // First time: one full read per layer met (upper, lower, numbers). Second time: none.
+        assert.equal(fullReads, seed === 1 ? cache.layers.length : 0);
+    }
+    assert.equal(cache.layers.length, 3);
+});
+
+test('words go to the device as one tap sequence each, with the same result', async () => {
+    class SequenceKeyboard extends FakeKeyboard {
+        sequences = 0;
+        async performSequence(actions: PointerAction[]): Promise<boolean> {
+            this.sequences += 1;
+            // Play each down..up as its own tap, keeping the pauses between them.
+            let tap: PointerAction[] = [];
+            for (const action of actions) {
+                if (action.type === 'pause' && !tap.length) { this.clock += action.duration; continue; }
+                tap.push(action);
+                if (action.type === 'pointerUp') { await this.perform(tap); tap = []; }
+            }
+            return true;
+        }
+    }
+    const device = new SequenceKeyboard();
+    const text = 'Salut toi, on tape vite maintenant';
+    await typeOnKeyboard(device, text, options(device, 7, { typoRate: 0 }));
+    assert.equal(device.text, text);
+    // About one request per word instead of one per key.
+    assert.ok(device.sequences <= 8, `${device.sequences} sequences`);
+    assert.ok(device.taps.length >= Array.from(text).length);
+});
+
+test('a device without tap sequences falls back to one tap per request', async () => {
+    class OldWda extends FakeKeyboard {
+        async performSequence(): Promise<boolean> { return false; }
+    }
+    const device = new OldWda();
+    await typeOnKeyboard(device, 'Salut toi', options(device, 3, { typoRate: 0 }));
+    assert.equal(device.text, 'Salut toi');
 });

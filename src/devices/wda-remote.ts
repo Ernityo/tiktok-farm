@@ -1,7 +1,7 @@
 import { coordinatesForProfile } from './coordinates.js';
 import { humanSwipe, humanTap, pathFromActions, type PointerAction, type Random } from './humanize.js';
 import type { TouchEvent } from './touch-events.js';
-import { MAX_TYPING_LENGTH, typeOnKeyboard, type TypingReport } from './typing.js';
+import { cachedKeyboard, MAX_TYPING_LENGTH, typeOnKeyboard, type KeyboardLayerCache, type TypingReport } from './typing.js';
 import { WdaKeyboard } from './wda-keyboard.js';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -105,6 +105,9 @@ export interface RemoteControl {
 }
 
 export class RemoteDeviceError extends Error {}
+
+/** Keyboard layers read so far, per phone and keyboard position, for the life of the process. */
+const keyboardLayers = new Map<string, KeyboardLayerCache>();
 
 export class WdaRemoteControl {
     readonly wdaUrl: string;
@@ -361,7 +364,14 @@ export class WdaRemoteControl {
                 (actions) => pointerSource(actions.map(withViewportOrigin)),
             );
             await keyboard.open(options.field, onTap);
-            return await typeOnKeyboard(keyboard, text, { wpm: options.wpm, typoRate: options.typoRate, onTap });
+            // Same phone, same keyboard position: the layout is the same, so
+            // each layer is read in full (seconds on a busy app) only once.
+            const frame = await keyboard.frame();
+            const key = frame ? `${udid}|${frame.x},${frame.y},${frame.width},${frame.height}` : undefined;
+            let cache = key ? keyboardLayers.get(key) : undefined;
+            if (key && !cache) keyboardLayers.set(key, cache = { layers: [] });
+            const device = cache ? cachedKeyboard(keyboard, cache) : keyboard;
+            return await typeOnKeyboard(device, text, { wpm: options.wpm, typoRate: options.typoRate, onTap });
         } catch (error) {
             if (error instanceof RemoteDeviceError) throw error;
             throw new RemoteDeviceError(errorMessage(error));

@@ -70,6 +70,12 @@ export class WdaKeyboard implements KeyboardDevice {
         return ids.length > 0;
     }
 
+    /** Where the keyboard sits on screen, or undefined when none is shown. */
+    async frame(): Promise<KeyRect | undefined> {
+        const [id] = await this.findElements('class name', 'XCUIElementTypeKeyboard');
+        return id ? this.rect(id) : undefined;
+    }
+
     async keyboardVisible(): Promise<boolean> {
         return (await this.findElements('class name', 'XCUIElementTypeKeyboard')).length > 0;
     }
@@ -77,6 +83,26 @@ export class WdaKeyboard implements KeyboardDevice {
     async perform(actions: PointerAction[]): Promise<void> {
         await this.post('/wda/absolute-actions', { actions: this.toW3c(actions) });
     }
+
+    /**
+     * Several taps in one request on the patched route
+     * (Patches/appium-webdriveragent-8.9.1-tap-sequence.patch). False when
+     * this WDA build doesn't have it: never send a multi-tap to
+     * /wda/absolute-actions, which plays it as one swipe (swipe-typing).
+     */
+    async performSequence(actions: PointerAction[]): Promise<boolean> {
+        if (WdaKeyboard.noSequences.has(this.sessionId)) return false;
+        const response = await this.post('/wda/absolute-tap-sequence', { actions: this.toW3c(actions) });
+        if (response.status === 404) {
+            WdaKeyboard.noSequences.add(this.sessionId);
+            console.log('[typing] this WebDriverAgent has no tap-sequence route (run npm run wda:prepare); typing one key per request');
+            return false;
+        }
+        if (!response.ok) throw new Error(`Tap sequence failed: ${await response.text()}`);
+        return true;
+    }
+
+    private static readonly noSequences = new Set<string>();
 
     /**
      * Opens the keyboard by tapping `field`, or else the first text field on

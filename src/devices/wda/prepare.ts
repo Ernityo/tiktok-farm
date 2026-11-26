@@ -48,10 +48,15 @@ const buttonsPatchPath = path.join(
     packageRoot,
     'Patches/appium-webdriveragent-8.9.1-sessionless-buttons.patch',
 );
+// Several taps in one request (typing a word at once); applies on top of the absolute-touch patch.
+const tapSequencePatchPath = path.join(
+    packageRoot,
+    'Patches/appium-webdriveragent-8.9.1-tap-sequence.patch',
+);
 
 await Promise.all([
     access(projectPath), access(touchCommandsPath), access(runnerInfoPlistPath), access(customCommandsPath),
-    access(patchPath), access(buttonsPatchPath),
+    access(patchPath), access(buttonsPatchPath), access(tapSequencePatchPath),
 ]);
 const touchCommands = await readFile(touchCommandsPath, 'utf8');
 const runnerInfoPlist = await readFile(runnerInfoPlistPath, 'utf8');
@@ -60,6 +65,12 @@ if (touchCommands.includes('FBImportMedia') && runnerInfoPlist.includes('NSPhoto
 } else {
     await run('/usr/bin/patch', ['-p0', '-i', patchPath], { cwd: workspaceRoot });
     console.log('Applied WDA absolute-touch patch');
+}
+if ((await readFile(touchCommandsPath, 'utf8')).includes('/wda/absolute-tap-sequence')) {
+    console.log('WDA tap-sequence patch is already applied');
+} else {
+    await run('/usr/bin/patch', ['-p0', '-i', tapSequencePatchPath], { cwd: workspaceRoot });
+    console.log('Applied WDA tap-sequence patch');
 }
 const customCommands = await readFile(customCommandsPath, 'utf8');
 if (customCommands.includes('POST:@"/wda/pressButton"].withoutSession')) {

@@ -47,6 +47,12 @@ export interface KeyboardDevice {
     hasKey(label: string): Promise<boolean>;
     /** Perform pointer actions; resolves once they have been performed. */
     perform(actions: PointerAction[]): Promise<void>;
+    /**
+     * Perform several separate taps in one go (each pointerDown..pointerUp its
+     * own touch), timed by the pauses between them. Resolves false when the
+     * device can't (then taps go one per perform call).
+     */
+    performSequence?(actions: PointerAction[]): Promise<boolean>;
 }
 
 export interface TypingOptions {
@@ -67,6 +73,43 @@ export interface TypingReport {
     typos: number;
     durationMs: number;
     wpm: number;
+}
+
+/**
+ * Keyboard layers already read on one keyboard (same phone, same keyboard
+ * frame). A full read costs a page-source request, seconds on a busy app;
+ * the layout never changes, so later reads only confirm which known layer
+ * is up with one key lookup.
+ */
+export interface KeyboardLayerCache { layers: KeyboardKey[][] }
+
+/** A label found on this layer and on no other known one, to tell it apart with one lookup. */
+function markerLabel(keys: readonly KeyboardKey[], others: readonly KeyboardKey[][]): string | undefined {
+    const elsewhere = new Set(others.flatMap((layer) => layer.map((key) => key.label)));
+    // Letters and digits first: nothing else on screen is labelled "a" or "1".
+    const candidates = keys.map((key) => key.label).filter((label) => singleChar(label) && !elsewhere.has(label));
+    return candidates.find((label) => /^[\p{L}\p{N}]$/u.test(label)) ?? candidates[0];
+}
+
+/** Wraps a keyboard so each layer is read in full once, then recognised from the cache. */
+export function cachedKeyboard(device: KeyboardDevice, cache: KeyboardLayerCache): KeyboardDevice {
+    return {
+        hasKey: (label) => device.hasKey(label),
+        perform: (actions) => device.perform(actions),
+        ...(device.performSequence ? { performSequence: (actions: PointerAction[]) => device.performSequence!(actions) } : {}),
+        async readKeyboard() {
+            for (const [index, keys] of cache.layers.entries()) {
+                const marker = markerLabel(keys, cache.layers.filter((_, other) => other !== index));
+                if (marker && await device.hasKey(marker)) return keys;
+            }
+            const keys = await device.readKeyboard();
+            if (keys.length) {
+                const signature = describeKeyboard(keys).signature;
+                if (!cache.layers.some((layer) => describeKeyboard(layer).signature === signature)) cache.layers.push(keys);
+            }
+            return keys;
+        },
+    };
 }
 
 export const MAX_TYPING_LENGTH = 1000;
@@ -282,10 +325,57 @@ export async function typeOnKeyboard(device: KeyboardDevice, text: string, optio
         return letters.length ? Math.min(...letters.map((key) => key.rect.width)) : 30;
     };
 
-    // Plays strokes one tap per request (WDA's absolute-touch route performs
-    // a single press per call), each at its planned time. Request latency is
-    // about constant, so the gaps between presses survive it.
+    // A word goes to the device as one tap sequence when it can play one:
+    // the gaps and holds are inside the request, so request latency (~300 ms
+    // a call) is paid once per word instead of once per key.
+    let sequences = Boolean(device.performSequence);
+    const sendSequence = async (strokes: Stroke[]): Promise<boolean> => {
+        const wait = lastDownAt + strokes[0].gapMs - now();
+        if (wait > 0) await sleep(wait);
+        const actions: PointerAction[] = [];
+        const taps: Array<{ at: number; point: Point }> = [];
+        let at = 0;
+        let previousHold = 0;
+        strokes.forEach((stroke, index) => {
+            const point = keyPressPoint(stroke.key.rect, random);
+            const hold = keyHoldMs(random);
+            if (index > 0) {
+                // Down-to-down gap, minus the previous key's hold: the finger is up in between.
+                const pause = Math.max(15, stroke.gapMs - previousHold);
+                actions.push({ type: 'pause', duration: pause });
+                at += previousHold + pause;
+            }
+            actions.push(
+                { type: 'pointerMove', duration: 0, x: point.x, y: point.y },
+                { type: 'pointerDown', button: 0 },
+                { type: 'pause', duration: hold },
+                { type: 'pointerUp', button: 0 },
+            );
+            taps.push({ at, point });
+            previousHold = hold;
+        });
+        const startedSequence = now();
+        // The live overlay shows each tap when it lands.
+        const timers = options.onTap ? taps.map(({ at: offset, point }) => setTimeout(() => options.onTap?.(point), offset)) : [];
+        const played = await device.performSequence!(actions);
+        if (!played) {
+            timers.forEach(clearTimeout);
+            return false;
+        }
+        lastDownAt = startedSequence + (taps.at(-1)?.at ?? 0);
+        lastPoint = taps.at(-1)?.point;
+        keystrokes += strokes.length;
+        return true;
+    };
+
+    // Otherwise one tap per request, each at its planned time. Request latency
+    // is about constant, so the gaps between presses survive it.
     const send = async (strokes: Stroke[]): Promise<void> => {
+        if (!strokes.length) return;
+        if (sequences && strokes.length > 1) {
+            if (await sendSequence(strokes)) return;
+            sequences = false;
+        }
         for (const stroke of strokes) {
             const point = keyPressPoint(stroke.key.rect, random);
             const hold = keyHoldMs(random);
@@ -307,10 +397,21 @@ export async function typeOnKeyboard(device: KeyboardDevice, text: string, optio
     const gapTo = (key: KeyboardKey, from: Point | undefined, extra: number) =>
         keyIntervalMs(from, center(key.rect), keyWidth(), wpm, random) + extra;
 
+    // A lowercase letter starting a word mid-sentence on the lowercase layer:
+    // iOS has no reason to have switched layers, so skip the round trip that
+    // checks (one per word otherwise). After ". " iOS capitalizes by itself,
+    // and the first letter may be auto-capitalized too: those still check.
+    let typed = 0;
+    const trustLayer = (char: string): boolean => {
+        if (layer.kind !== 'lower' || !isLetter(char) || isUpper(char) || typed === 0) return false;
+        const before = chars.slice(Math.max(0, typed - 3), typed).join('');
+        return /[^.!?\s]\s$/.test(before);
+    };
+
     // Finds `char` on the keyboard, switching layers if needed.
     const locate = async (char: string): Promise<KeyboardKey> => {
         const cached = keyForChar(layer, char);
-        if (cached && (char === ' ' || char === '\n' || await device.hasKey(cached.label))) return cached;
+        if (cached && (char === ' ' || char === '\n' || trustLayer(char) || await device.hasKey(cached.label))) return cached;
         layer = describeKeyboard(await device.readKeyboard());
         const seen = new Set<string>();
         for (let step = 0; step < 4; step += 1) {
@@ -331,6 +432,7 @@ export async function typeOnKeyboard(device: KeyboardDevice, text: string, optio
 
     let index = 0;
     while (index < chars.length) {
+        typed = index;
         const first = await locate(chars[index]);
         const strokes: Stroke[] = [];
         let from = lastPoint;
