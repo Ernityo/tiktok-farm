@@ -5,7 +5,8 @@ import { remote, type Browser } from 'webdriverio';
 
 import { loadRegisteredDevices, resolveDeviceCoordinates, WdaRemoteControl } from '@git-agni/phone-farm-core';
 import { coordinateProfile, registeredAccounts } from './runtime-settings.js';
-import { appLaunchSettleMs, swipeCoordinates, switchTikTokAccount, tapCoordinate } from './actions.js';
+import { appLaunchSettleMs, performSwipe, swipeCoordinates, switchTikTokAccount, tapCoordinate } from './actions.js';
+import { profileSwipe, resolveSwipeStyle } from '../devices/swipe-profiles.js';
 import { detectAd, type AdDetection } from './ad-detection.js';
 import { detectEngagementControls, type EngagementControls } from './engagement-controls.js';
 import {
@@ -63,6 +64,8 @@ const switchAccountName = process.env.TIKTOK_SWITCH_ACCOUNT?.trim() || undefined
 const registeredDevice = (await loadRegisteredDevices()).find((device) => device.udid === udid);
 const coordinates = resolveDeviceCoordinates(coordinateProfile(registeredDevice), registeredDevice?.coordinates);
 const tiktokCoordinates = coordinates.tiktok;
+// Thumb-side swipe style (default right-thumb); undefined means the fixed swipe.
+const swipeStyle = resolveSwipeStyle(undefined, coordinateProfile(registeredDevice));
 const accountSwitchCoords = {
     profileTabX: tiktokCoordinates.profileTab.x,
     profileTabY: tiktokCoordinates.profileTab.y,
@@ -165,7 +168,7 @@ let likes = 0;
 let saves = 0;
 const runStartedAt = Date.now();
 
-console.log(`Starting doomscroll: profile=${personality} requestedDurationMinutes=${durationMinutes} likeEnabled=${likeEnabled} saveEnabled=${saveEnabled}`);
+console.log(`Starting doomscroll: profile=${personality} swipeStyle=${swipeStyle ?? 'fixed'} requestedDurationMinutes=${durationMinutes} likeEnabled=${likeEnabled} saveEnabled=${saveEnabled}`);
 
 try {
     const remoteControl = new WdaRemoteControl({
@@ -306,14 +309,16 @@ try {
         const startY = isAd ? adSwipeStartY : swipeStartY;
         const durationMs = isAd ? adSwipeDurationMs : swipeDurationMs;
         await debugShot(isAd ? 'before-swipe-ad' : 'before-swipe');
-        const swipe = await swipeCoordinates(
-            driver,
-            { x: swipeX, y: startY },
-            { x: swipeX, y: swipeEndY },
-            durationMs,
-            // On ads, never let the start drift further down toward the CTA.
-            isAd ? { startRadius: { x: 18, y: 6 } } : {},
-        );
+        const swipe = !isAd && swipeStyle
+            ? await performSwipe(driver, profileSwipe(swipeStyle))
+            : await swipeCoordinates(
+                driver,
+                { x: swipeX, y: startY },
+                { x: swipeX, y: swipeEndY },
+                durationMs,
+                // On ads, never let the start drift further down toward the CTA.
+                isAd ? { startRadius: { x: 18, y: 6 } } : {},
+            );
         swipes += 1;
         console.log(`Swiped (${swipe.start.x}, ${swipe.start.y}) -> (${swipe.end.x}, ${swipe.end.y}) in ${swipe.durationMs} ms${isAd ? ' [ad]' : ''}`);
         await debugShot('after-swipe', undefined, 1000);

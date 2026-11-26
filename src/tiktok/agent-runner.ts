@@ -2,7 +2,7 @@
 // a Claude Code session. Ads and shop posts are skipped in code; every other
 // video is judged by the model in one stateless call.
 //
-//   npm run agent:scroll -- --account @handle --minutes 10 [--personality casual] [--language French] [--udid ...] [--niche "..."]
+//   npm run agent:scroll -- --account @handle --minutes 10 [--personality casual] [--language French] [--udid ...] [--niche "..."] [--swipe-style right-thumb|left-thumb|left-index|right-index|fixed]
 //
 // --language is the language videos must be in (the phone's language: TikTok
 // shows a translation link on anything else); other videos are skipped.
@@ -15,6 +15,7 @@ import { DEFAULT_AGENT_MODEL, OpenRouterDecider, systemPrompt, type ModelDecisio
 import { autoSkipReason, type AgentPlan } from './agent-plan.js';
 import { TikTokAgentSession, type Observation, type SessionSummary } from './agent-session.js';
 import type { Personality } from './doomscroll-profile.js';
+import { SWIPE_STYLES, type SwipeStyle } from '../devices/swipe-profiles.js';
 
 const PERSONALITIES: readonly Personality[] = ['skimmer', 'casual', 'engaged'];
 /** Consecutive model failures before the session is stopped. */
@@ -28,8 +29,13 @@ const { values } = parseArgs({
         udid: { type: 'string' },
         niche: { type: 'string' },
         language: { type: 'string', default: 'French' },
+        'swipe-style': { type: 'string' },
     },
 });
+const swipeStyle = values['swipe-style'] as SwipeStyle | undefined;
+if (swipeStyle !== undefined && !(SWIPE_STYLES as readonly string[]).includes(swipeStyle)) {
+    throw new Error(`--swipe-style must be one of ${SWIPE_STYLES.join(', ')}`);
+}
 
 const minutes = Number.parseInt(values.minutes, 10);
 if (!Number.isInteger(minutes) || minutes < 1 || minutes > 60) throw new Error('--minutes must be 1-60');
@@ -58,6 +64,7 @@ const { session, observation: first } = await TikTokAgentSession.start({
     ...(values.account ? { account: values.account } : {}),
     ...(values.udid ? { udid: values.udid } : {}),
     ...(values.niche ? { niche: { description: values.niche, keywords: [], avoid: [] } } : {}),
+    ...(swipeStyle ? { swipeStyle } : {}),
 });
 const decider = new OpenRouterDecider(apiKey, model, systemPrompt(session.niche, personality, values.language));
 console.log(`[scroll] ${session.account ?? 'current account'} · ${personality} · ${minutes} min · ${model}\n[scroll] niche: ${session.niche.description}${session.niche.avoid.length ? ` · avoid: ${session.niche.avoid.join(', ')}` : ''} · language: ${values.language}`);

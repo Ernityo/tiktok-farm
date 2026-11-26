@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { TikTokAgentSession, type Observation, type SessionSummary } from './agent-session.js';
 import { PROFILES, type Personality } from './doomscroll-profile.js';
 import type { Niche } from './niche.js';
+import { SWIPE_STYLES } from '../devices/swipe-profiles.js';
 
 // MCP server for agentic TikTok doomscroll, driven from an interactive Claude
 // Code session (registered in .mcp.json). The agent sees one small screenshot
@@ -71,8 +72,10 @@ server.registerTool('tiktok_start', {
         account: z.string().optional().describe('TikTok handle the phone is already on, e.g. @fitjulie; its saved niche is used (no switching)'),
         niche: z.string().max(1000).optional().describe('Niche description; overrides the saved one'),
         udid: z.string().optional().describe('Device UDID; only needed when several phones are registered'),
+        swipeStyle: z.enum(SWIPE_STYLES).optional()
+            .describe('Thumb side the swipes copy: right-thumb (default), left-thumb, left-index, right-index, or fixed for the old straight swipe'),
     },
-}, async ({ minutes, personality, account, niche, udid }) => {
+}, async ({ minutes, personality, account, niche, udid, swipeStyle }) => {
     if (session) return failure('A session is already running; call tiktok_stop first');
     try {
         const started = await TikTokAgentSession.start({
@@ -80,6 +83,7 @@ server.registerTool('tiktok_start', {
             personality,
             ...(account ? { account } : {}),
             ...(udid ? { udid } : {}),
+            ...(swipeStyle ? { swipeStyle } : {}),
             ...(niche ? { niche: { description: niche, keywords: [], avoid: [] } } : {}),
         });
         session = started.session;

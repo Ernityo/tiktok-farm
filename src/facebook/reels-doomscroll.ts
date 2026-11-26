@@ -5,7 +5,8 @@ import { remote, type Browser } from 'webdriverio';
 
 import { loadRegisteredDevices, resolveDeviceCoordinates, WdaRemoteControl } from '@git-agni/phone-farm-core';
 import { coordinateProfile } from '../tiktok/runtime-settings.js';
-import { swipeCoordinates, tapCoordinate } from '../tiktok/actions.js';
+import { performSwipe, swipeCoordinates, tapCoordinate } from '../tiktok/actions.js';
+import { profileSwipe, resolveSwipeStyle } from '../devices/swipe-profiles.js';
 import {
     PROFILES,
     clampToDeadline,
@@ -64,6 +65,8 @@ const wdaUrl = process.env.WDA_URL;
 
 const registeredDevice = (await loadRegisteredDevices()).find((device) => device.udid === udid);
 const coordinates = resolveDeviceCoordinates(coordinateProfile(registeredDevice), registeredDevice?.coordinates);
+// Thumb-side swipe style (default right-thumb); undefined means the fixed swipe.
+const swipeStyle = resolveSwipeStyle(undefined, coordinateProfile(registeredDevice));
 const facebook = coordinates.facebook;
 if (!facebook) {
     throw new Error(`Coordinate profile "${coordinateProfile(registeredDevice)}" has no Facebook layout yet; only measured devices (iPhone XR) are supported`);
@@ -256,7 +259,9 @@ try {
 
     const swipeToNext = async (): Promise<void> => {
         const { x, startY, endY, durationMs } = facebook.swipe;
-        const swipe = await swipeCoordinates(driver!, { x, y: startY }, { x, y: endY }, durationMs);
+        const swipe = swipeStyle
+            ? await performSwipe(driver!, profileSwipe(swipeStyle))
+            : await swipeCoordinates(driver!, { x, y: startY }, { x, y: endY }, durationMs);
         swipes += 1;
         console.log(`Swiped (${swipe.start.x}, ${swipe.start.y}) -> (${swipe.end.x}, ${swipe.end.y}) in ${swipe.durationMs} ms`);
     };

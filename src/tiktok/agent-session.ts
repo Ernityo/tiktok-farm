@@ -8,7 +8,8 @@ import {
     activeDevices, loadRegisteredDevices, resolveDeviceCoordinates, WdaRemoteControl,
 } from '@git-agni/phone-farm-core';
 import type { RegisteredDevice } from '../devices/registry.js';
-import { appLaunchSettleMs, swipeCoordinates, tapCoordinate } from './actions.js';
+import { appLaunchSettleMs, performSwipe, swipeCoordinates, tapCoordinate } from './actions.js';
+import { profileSwipe, resolveSwipeStyle, type SwipeProfile, type SwipeStyle } from '../devices/swipe-profiles.js';
 import { adFromWords, detectAdStrict, readCaptionWords, type AdDetection } from './ad-detection.js';
 import { engagementAllowance, FULL_WATCH_CAP_MS, sameCaption, SHOP_POST, timePlan, type AgentPlan, type TimedPlan } from './agent-plan.js';
 import { ReelWatchTracker } from '../facebook/reels-progress.js';
@@ -61,6 +62,8 @@ export interface StartOptions {
     account?: string;
     /** Overrides the account's saved niche (or stands in when no account is given). */
     niche?: Niche;
+    /** Thumb-side swipe style; defaults to right-thumb. 'fixed' uses the old swipe. */
+    swipeStyle?: SwipeStyle;
 }
 
 export interface Observation {
@@ -156,6 +159,7 @@ export class TikTokAgentSession {
         readonly account: string | undefined,
         readonly niche: Niche,
         readonly personality: Personality,
+        private readonly swipeStyle: SwipeProfile | undefined,
     ) {}
 
     /** Unlocks the phone, opens TikTok (already on the account), and observes the first video. */
@@ -173,6 +177,7 @@ export class TikTokAgentSession {
         }
 
         const coordinates = resolveDeviceCoordinates(coordinateProfile(device), device.coordinates);
+        const swipeStyle = resolveSwipeStyle(options.swipeStyle, coordinateProfile(device));
         const wdaUrl = process.env.WDA_URL ?? `http://127.0.0.1:${device.wdaLocalPort ?? Number(process.env.WDA_LOCAL_PORT ?? 8100)}`;
         const bundleId = process.env.TIKTOK_BUNDLE_ID ?? 'com.zhiliaoapp.musically';
         const remoteControl = new WdaRemoteControl({
@@ -222,7 +227,7 @@ export class TikTokAgentSession {
             }, null, 2));
             const session = new TikTokAgentSession(
                 driver, remoteControl, device, tiktok, scale, Date.now() + options.minutes * 60_000, logDirectory, account, niche,
-                options.personality,
+                options.personality, swipeStyle,
             );
             const observation = await session.observe(Date.now());
             return { session, observation };
@@ -421,6 +426,10 @@ export class TikTokAgentSession {
     }
 
     private async swipe(isAd: boolean): Promise<void> {
+        if (!isAd && this.swipeStyle) {
+            await performSwipe(this.driver, profileSwipe(this.swipeStyle));
+            return;
+        }
         const { x, startY, adStartY, endY, durationMs } = this.coordinates.swipe;
         // Ads put forms and CTA buttons where the normal swipe starts, so the
         // swipe starts higher on ads, at the same finger speed.

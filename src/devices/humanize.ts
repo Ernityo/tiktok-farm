@@ -93,6 +93,10 @@ export interface SwipeOptions {
     durationJitter?: number;
     /** Max sideways bow of the path, as a fraction of its length. */
     maxCurve?: number;
+    /** Fixed signed bow (fraction of length, + = toward +x). Overrides the random bow. */
+    bow?: number;
+    /** Fixed touch-down delay before the finger moves. Overrides the random one. */
+    touchDownMs?: number;
 }
 
 export interface HumanSwipe {
@@ -151,7 +155,10 @@ export function humanSwipe(
     const dx = end.x - start.x;
     const dy = end.y - start.y;
     const length = Math.hypot(dx, dy) || 1;
-    const bow = uniform(-maxCurve, maxCurve, random) * length;
+    const randomBow = uniform(-maxCurve, maxCurve, random) * length;
+    // A bezier's peak deviation is half its control offset, so a measured
+    // bow fraction `b` needs a control offset of 2b.
+    const bow = options.bow !== undefined ? 2 * options.bow * length : randomBow;
     const along = uniform(0.35, 0.65, random);
     const control = {
         x: start.x + dx * along + (-dy / length) * bow,
@@ -159,7 +166,8 @@ export function humanSwipe(
     };
 
     const segments = 6 + Math.floor(random() * 5); // 6–10
-    const touchDownMs = Math.round(clamp(80 + gaussian(random) * 30, 30, 160));
+    const randomTouchDown = Math.round(clamp(80 + gaussian(random) * 30, 30, 160));
+    const touchDownMs = options.touchDownMs !== undefined ? Math.round(options.touchDownMs) : randomTouchDown;
     const actions: PointerAction[] = [
         { type: 'pointerMove', duration: 0, x: start.x, y: start.y },
         { type: 'pointerDown', button: 0 },

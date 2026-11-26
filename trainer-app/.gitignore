@@ -1,0 +1,9 @@
+TrainerApp.xcodeproj/
+recordings/
+build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+.DS_Store
+__pycache__/
+TrainerApp/Info.plist

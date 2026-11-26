@@ -33,7 +33,11 @@ export async function tapCoordinate(
 export async function swipeCoordinates(
     driver: Browser, from: Point, to: Point, durationMs: number, options: SwipeOptions = {},
 ): Promise<HumanSwipe> {
-    const swipe = humanSwipe(from, to, durationMs, options);
+    return performSwipe(driver, humanSwipe(from, to, durationMs, options));
+}
+
+/** Performs an already-planned swipe (see profileSwipe for the recorded styles). */
+export async function performSwipe(driver: Browser, swipe: HumanSwipe): Promise<HumanSwipe> {
     emitTouch(swipeTouch(swipe.actions));
     // Coordinate actions bypass XCTest's expensive application-element
     // lookup, which can hang on TikTok's continuously updating feed.
