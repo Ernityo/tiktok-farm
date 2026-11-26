@@ -273,9 +273,9 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
         await options.registrations.cancel(request.params.id);
         return reply.code(204).send();
     });
-    app.post<{ Body: { name?: string; udid?: string; wdaLocalPort?: number; mjpegLocalPort?: number; passcode?: string; coordinateProfile?: string; pluginData?: Record<string, JsonObject> } }>(
+    app.post<{ Body: { name?: string; udid?: string; wdaLocalPort?: number; mjpegLocalPort?: number; wdaRemotePort?: number; mjpegRemotePort?: number; passcode?: string; coordinateProfile?: string; pluginData?: Record<string, JsonObject> } }>(
         '/api/devices', async (request, reply) => {
-            const { name, udid, wdaLocalPort, mjpegLocalPort, passcode, coordinateProfile, pluginData } = request.body;
+            const { name, udid, wdaLocalPort, mjpegLocalPort, wdaRemotePort, mjpegRemotePort, passcode, coordinateProfile, pluginData } = request.body;
             if (!udid) return reply.code(400).send({ error: 'A device UDID is required' });
             if (passcode !== undefined && !PASSCODE_PATTERN.test(passcode)) {
                 return reply.code(400).send({ error: 'Device passcode must contain at least four digits' });
@@ -287,6 +287,8 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
                     name: name ?? udid, udid, pluginData: pluginData ?? {},
                     ...(wdaLocalPort !== undefined ? { wdaLocalPort } : {}),
                     ...(mjpegLocalPort !== undefined ? { mjpegLocalPort } : {}),
+                    ...(wdaRemotePort !== undefined ? { wdaRemotePort } : {}),
+                    ...(mjpegRemotePort !== undefined ? { mjpegRemotePort } : {}),
                     ...(coordinateProfile !== undefined ? { coordinateProfile: coordinateProfile as RegisteredDevice['coordinateProfile'] } : {}),
                     ...(passcode !== undefined ? { passcode } : {}),
                 };
@@ -296,9 +298,9 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
             return reply.code(201).send(redactDevice(created));
         },
     );
-    app.patch<{ Params: { udid: string }; Body: { name?: string; wdaLocalPort?: number; mjpegLocalPort?: number; passcode?: string; coordinates?: unknown; disabled?: boolean; coordinateProfile?: string; pluginData?: Record<string, JsonObject> } }>(
+    app.patch<{ Params: { udid: string }; Body: { name?: string; wdaLocalPort?: number; mjpegLocalPort?: number; wdaRemotePort?: number; mjpegRemotePort?: number; passcode?: string; coordinates?: unknown; disabled?: boolean; coordinateProfile?: string; pluginData?: Record<string, JsonObject> } }>(
         '/api/devices/:udid', async (request, reply) => {
-            const { passcode, coordinates, name, wdaLocalPort, mjpegLocalPort, disabled, coordinateProfile, pluginData } = request.body;
+            const { passcode, coordinates, name, wdaLocalPort, mjpegLocalPort, wdaRemotePort, mjpegRemotePort, disabled, coordinateProfile, pluginData } = request.body;
             if (passcode !== undefined && passcode !== '' && !PASSCODE_PATTERN.test(passcode)) {
                 return reply.code(400).send({ error: 'Device passcode must contain at least four digits' });
             }
@@ -311,6 +313,8 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
                 if (name !== undefined) device.name = name;
                 if (wdaLocalPort !== undefined) device.wdaLocalPort = wdaLocalPort;
                 if (mjpegLocalPort !== undefined) device.mjpegLocalPort = mjpegLocalPort;
+                if (wdaRemotePort !== undefined) device.wdaRemotePort = wdaRemotePort;
+                if (mjpegRemotePort !== undefined) device.mjpegRemotePort = mjpegRemotePort;
                 if (coordinateProfile !== undefined) device.coordinateProfile = coordinateProfile as RegisteredDevice['coordinateProfile'];
                 if (pluginData !== undefined) device.pluginData = pluginData;
                 if (disabled === true) device.disabled = true;

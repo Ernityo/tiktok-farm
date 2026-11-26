@@ -10,6 +10,10 @@ export interface RegisteredDevice {
     coordinateProfile?: DeviceProfileName;
     wdaLocalPort?: number;
     mjpegLocalPort?: number;
+    /** Port WDA listens on inside the phone (USE_PORT); defaults to WDA_REMOTE_PORT or 8100. */
+    wdaRemotePort?: number;
+    /** MJPEG port inside the phone (MJPEG_SERVER_PORT); defaults to MJPEG_REMOTE_PORT or 9100. */
+    mjpegRemotePort?: number;
     /** Device unlock passcode. Lives here (devices.json is 0600 and git-ignored), never in an API response. */
     passcode?: string;
     /** Per-device single-tap coordinate overrides (dashboard calibration). */

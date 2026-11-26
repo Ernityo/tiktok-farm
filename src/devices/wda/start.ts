@@ -183,7 +183,14 @@ async function startRunner(): Promise<void> {
     lastReadyAt = undefined;
     report('connecting', 'Starting WDA');
     const running = spawn('xcodebuild', args, {
-        env: { ...process.env, DEVELOPER_DIR: developerDir },
+        // The WDA scheme forwards these to the runner as $(USE_PORT) / $(MJPEG_SERVER_PORT),
+        // which is what makes WDA listen on them inside the phone.
+        env: {
+            ...process.env,
+            DEVELOPER_DIR: developerDir,
+            USE_PORT: String(remotePort),
+            MJPEG_SERVER_PORT: String(mjpegRemotePort),
+        },
         stdio: ['ignore', 'pipe', 'pipe'],
     });
     child = running;

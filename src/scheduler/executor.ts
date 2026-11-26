@@ -157,6 +157,7 @@ export async function executeAutomation(
             ...process.env,
             IOS_UDID: device.udid,
             WDA_URL: `http://127.0.0.1:${registered.wdaLocalPort ?? Number(process.env.WDA_LOCAL_PORT ?? 8100)}`,
+            WDA_REMOTE_PORT: String(registered.wdaRemotePort ?? Number(process.env.WDA_REMOTE_PORT ?? 8100)),
             ...(passcode ? { IOS_PASSCODE: passcode } : {}),
         };
         const context: TaskExecutionContext = {

@@ -81,6 +81,8 @@ function defaultSpawnSupervisor(device: RegisteredDevice): ChildProcess {
             IOS_UDID: device.udid,
             WDA_LOCAL_PORT: String(device.wdaLocalPort ?? Number(process.env.WDA_LOCAL_PORT ?? 8100)),
             MJPEG_LOCAL_PORT: String(device.mjpegLocalPort ?? Number(process.env.MJPEG_LOCAL_PORT ?? 9100)),
+            WDA_REMOTE_PORT: String(device.wdaRemotePort ?? Number(process.env.WDA_REMOTE_PORT ?? 8100)),
+            MJPEG_REMOTE_PORT: String(device.mjpegRemotePort ?? Number(process.env.MJPEG_REMOTE_PORT ?? 9100)),
         },
         stdio: ['ignore', 'pipe', 'pipe'],
     });

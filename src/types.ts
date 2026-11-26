@@ -12,6 +12,10 @@ export interface DeviceIdentity {
 export interface RegisteredDevice extends DeviceIdentity {
     wdaLocalPort?: number;
     mjpegLocalPort?: number;
+    /** Port WDA listens on inside the phone (USE_PORT); defaults to WDA_REMOTE_PORT or 8100. */
+    wdaRemotePort?: number;
+    /** MJPEG port inside the phone (MJPEG_SERVER_PORT); defaults to MJPEG_REMOTE_PORT or 9100. */
+    mjpegRemotePort?: number;
     /** Compiled tap-layout key; canonical here, not in pluginData. */
     coordinateProfile?: string;
     passcode?: string;
