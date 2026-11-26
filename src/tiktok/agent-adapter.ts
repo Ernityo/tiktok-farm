@@ -4,6 +4,7 @@
 
 import type { AgentAppAdapter, AppContext } from '../agent/session.js';
 import { swipeCoordinates } from './actions.js';
+import { ensureTikTokAccount } from './account.js';
 import { detectAdStrict } from './ad-detection.js';
 import { detectEngagementControls } from './engagement-controls.js';
 import { normalizeHandle } from './niche.js';
@@ -26,6 +27,11 @@ export const tiktokAdapter: AgentAppAdapter = {
         if (!registeredAccounts(device).map(normalizeHandle).includes(account)) {
             throw new Error(`${account} is not one of this device's TikTok accounts (dashboard → Accounts)`);
         }
+    },
+
+    // Profile tab → read the handle → switch if needed → back to For You.
+    async ensureAccount(context, account) {
+        return ensureTikTokAccount(context, account);
     },
 
     async strictAd(screenshot) {

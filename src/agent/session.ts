@@ -101,6 +101,12 @@ export interface AgentAppAdapter {
     readonly tapRadius?: number;
     /** Throws when `account` can't be used on this device. */
     checkAccount?(device: RegisteredDevice, account: string): void;
+    /**
+     * From the feed: checks which account the app is on, switches to `account`
+     * if needed, and comes back to the feed. Throws when it can't be confirmed.
+     * Apps without it trust that the phone is already on the account.
+     */
+    ensureAccount?(context: AppContext, account: string): Promise<AccountCheck>;
     /** From a cold launch to the first video; throws when the feed can't be confirmed. */
     openFeed?(context: AppContext): Promise<void>;
     /** App-specific reading of a fresh video (OCR ads are already handled by the session). */
@@ -125,13 +131,24 @@ export interface AgentAppAdapter {
     comment?(context: AppContext, text: string): Promise<{ verified: boolean; durationMs?: number; steps?: Record<string, number> }>;
 }
 
+export interface AccountCheck {
+    /** The account the app was on. */
+    from: string;
+    switched: boolean;
+    durationMs: number;
+}
+
 export interface StartOptions {
     adapter: AgentAppAdapter;
     minutes: number;
     /** Caps likes/saves and sets watch lengths, like the programmatic profiles. */
     personality: Personality;
     udid?: string;
-    /** Selects the niche (the app's own niche for this handle, else its TikTok one). No account switching. */
+    /**
+     * Selects the niche (the app's own niche for this handle, else its TikTok
+     * one). On apps that can (TikTok), the account is also checked after the
+     * first video or two, and switched to if the phone is on another one.
+     */
     account?: string;
     /** Overrides the account's saved niche (or stands in when no account is given). */
     niche?: Niche;
@@ -177,6 +194,8 @@ export interface SessionSummary {
     medianSkipScreenMs?: number;
     elapsedMs: number;
     logDirectory: string;
+    /** The account check after the first videos, when the app has one. */
+    accountCheck?: AccountCheck;
 }
 
 interface CurrentVideo {
@@ -307,6 +326,12 @@ export class AgentSession {
     private cardsInARow = 0;
     /** The app moved to the next video on its own: don't swipe past it. */
     private advancedOnItsOwn = false;
+    /**
+     * Video after which the account is checked (1 or 2), until it has been.
+     * Until then nothing is liked, saved or commented: it may be the wrong account.
+     */
+    private accountCheckAfter: number | undefined;
+    private accountCheck: AccountCheck | undefined;
     private readonly decisionMs: number[] = [];
     private readonly skipScreenMs: number[] = [];
     private readonly startedAt = Date.now();
@@ -320,13 +345,15 @@ export class AgentSession {
         readonly niche: Niche,
         readonly personality: Personality,
         private readonly swipeStyle: SwipeProfile | undefined,
-    ) {}
+    ) {
+        if (account && adapter.ensureAccount) this.accountCheckAfter = 1 + Math.floor(Math.random() * 2);
+    }
 
     get app(): AgentApp {
         return this.adapter.app;
     }
 
-    /** Unlocks the phone, opens the app's feed (already on the account), and observes the first video. */
+    /** Unlocks the phone, opens the app's feed, and observes the first video (the account is checked a video or two later). */
     static async start(options: StartOptions): Promise<{ session: AgentSession; observation: Observation }> {
         const { adapter } = options;
         const device = resolveDevice(await loadRegisteredDevices(), options.udid);
@@ -469,7 +496,11 @@ export class AgentSession {
             this.advancedOnItsOwn = false;
             const decidedAt = Date.now();
             const canSave = this.adapter.canSave;
-            const supported = { ...plan, ...(canSave ? {} : { save: false }), ...(this.adapter.comment && this.commentsWarm() ? {} : { comment: null }) };
+            const supported = {
+                ...plan, ...(canSave ? {} : { save: false }), ...(this.adapter.comment && this.commentsWarm() ? {} : { comment: null }),
+                // Possibly the wrong account until it has been checked.
+                ...(this.accountCheckAfter !== undefined ? { likeAtMs: null, save: false, comment: null } : {}),
+            };
             const timed = timePlan(supported, this.personality, {
                 judged: this.decisionMs.length, likes: this.likes, saves: this.saves, comments: this.comments,
                 ...(this.lastCommentAt !== undefined ? { lastCommentAt: this.lastCommentAt } : {}),
@@ -535,6 +566,12 @@ export class AgentSession {
             // Time is up: the last video is not swiped away; it stays on screen a
             // moment, like someone putting the phone down, then the app closes.
             const last = this.remainingMs <= 0;
+            let accountCheck: AccountCheck | undefined;
+            if (!last && this.accountCheckAfter !== undefined && video.index >= this.accountCheckAfter) {
+                accountCheck = await this.checkAccount();
+                // Back on the feed: whatever was there is swiped on as usual.
+                this.advancedOnItsOwn = false;
+            }
             let swipe: SwipeRecord | null = null;
             if (last) await sleep(finalLingerMs());
             else if (this.advancedOnItsOwn) console.log('[agent] already on the next video; not swiping');
@@ -546,7 +583,8 @@ export class AgentSession {
                 plan, timed, watched, liked, ...(canSave ? { saved } : {}), ...(commented ? { commented } : {}),
                 ...(this.advancedOnItsOwn ? { advancedOnItsOwn: true } : {}),
                 decisionMs: decidedAt - video.observedAt, screenMs: arrivedAt - video.arrivedAt, swipe,
-                ...(video.retrySwipes.length ? { retrySwipes: video.retrySwipes } : {}), ...logExtra,
+                ...(video.retrySwipes.length ? { retrySwipes: video.retrySwipes } : {}),
+                ...(accountCheck ? { accountCheck } : {}), ...logExtra,
                 ...(last ? { last: true } : {}),
             })}\n`).catch(() => undefined);
 
@@ -556,6 +594,15 @@ export class AgentSession {
         } finally {
             this.busy = false;
         }
+    }
+
+    /** Checks (and if needed switches) the account; a failure stops the session rather than scroll on the wrong one. */
+    private async checkAccount(): Promise<AccountCheck> {
+        const check = await this.adapter.ensureAccount!(this.context, this.account!);
+        this.accountCheck = check;
+        this.accountCheckAfter = undefined;
+        console.log(`[agent] account check: was ${check.from}${check.switched ? `, switched to ${this.account}` : ''} (${(check.durationMs / 1000).toFixed(1)} s)`);
+        return check;
     }
 
     /**
@@ -649,6 +696,7 @@ export class AgentSession {
             medianSkipScreenMs: median(this.skipScreenMs),
             elapsedMs: Date.now() - this.startedAt,
             logDirectory: this.logDirectory,
+            ...(this.accountCheck ? { accountCheck: this.accountCheck } : {}),
         };
         this.closed = summary;
         await writeFile(path.join(this.logDirectory, 'summary.json'), JSON.stringify(summary, null, 2)).catch(() => undefined);

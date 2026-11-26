@@ -5,6 +5,8 @@
 //
 //   npm run agent:scroll -- [--app tiktok|facebook|instagram] --account @handle --minutes 10 [--personality casual] [--language French] [--udid ...] [--niche "..."] [--swipe-style right-thumb|left-thumb|left-index|right-index|fixed]
 //
+// TikTok: after the first video or two the session checks the account on the
+// Profile tab and switches to --account if the phone is on another one.
 // Facebook/Instagram: --account only picks the niche (that app's niche for the
 // handle, else its TikTok niche); or pass --niche. They like but never save.
 // Facebook and Instagram also comment, rarely (AGENT_COMMENT_CHANCE raises the rate).

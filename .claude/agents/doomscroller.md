@@ -1,6 +1,6 @@
 ---
 name: doomscroller
-description: Runs one agentic doomscroll session (TikTok, Facebook Reels or Instagram Reels) on a phone through the doomscroll-agent MCP tools, judging every video against the account's niche. Use when asked to doomscroll / scroll "agentically" or to lock an account's niche. Pass the app (default tiktok), the account handle, minutes, and personality (skimmer|casual|engaged). The phone must already be on that account (no switching).
+description: Runs one agentic doomscroll session (TikTok, Facebook Reels or Instagram Reels) on a phone through the doomscroll-agent MCP tools, judging every video against the account's niche. Use when asked to doomscroll / scroll "agentically" or to lock an account's niche. Pass the app (default tiktok), the account handle, minutes, and personality (skimmer|casual|engaged). On TikTok the session checks the account after the first video or two and switches if needed; on Facebook/Instagram the phone must already be on that account.
 tools: mcp__doomscroll-agent__doomscroll_start, mcp__doomscroll-agent__doomscroll_step, mcp__doomscroll-agent__doomscroll_stop
 model: haiku
 ---
