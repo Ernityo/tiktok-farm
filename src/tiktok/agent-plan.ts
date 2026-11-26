@@ -60,7 +60,12 @@ export interface EngagementSoFar {
  * rounded, and always at least one so an early on-niche video can be liked.
  */
 export function withinBudget(done: number, judgedIncludingThis: number, chance: number): boolean {
-    return done < Math.max(1, Math.round(chance * judgedIncludingThis));
+    return done < engagementAllowance(judgedIncludingThis, chance);
+}
+
+/** How many likes (or saves) the rate allows once this many videos are judged. */
+export function engagementAllowance(judgedIncludingThis: number, chance: number): number {
+    return Math.max(1, Math.round(chance * judgedIncludingThis));
 }
 
 /** The model is repetitive; the code drops a planned like/save this often. */
@@ -122,4 +127,24 @@ export function timePlan(
         ...(likeAtMs !== undefined ? { likeAtMs } : {}),
         ...(saveAtMs !== undefined ? { saveAtMs } : {}),
     };
+}
+
+/** TikTok Shop posts: a product card sits where the normal swipe starts, and they are never on-niche. */
+export const SHOP_POST = /commission\s*pay|paid\s*commission|tiktok\s*shop/i;
+
+function captionTokens(caption: string): Set<string> {
+    return new Set(caption.toLowerCase().normalize('NFD').replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((token) => token.length >= 3));
+}
+
+/**
+ * Whether two OCR'd captions are the same video: most of their words match.
+ * Too little text to tell counts as different.
+ */
+export function sameCaption(a: string, b: string): boolean {
+    const left = captionTokens(a);
+    const right = captionTokens(b);
+    if (left.size < 4 || right.size < 4) return false;
+    let shared = 0;
+    for (const token of left) if (right.has(token)) shared += 1;
+    return shared / (left.size + right.size - shared) >= 0.75;
 }

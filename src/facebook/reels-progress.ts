@@ -84,27 +84,51 @@ export type WatchState =
     | { kind: 'watching' }
     | { kind: 'completed'; durationMs?: number };
 
+/** A fall this large between two readings is the bar looping back to the start. */
+const LOOP_DROP = 0.3;
+/** A fall from this far along is a loop at once; from earlier, the next reading must confirm it. */
+const CLEAR_LOOP_FROM = 0.85;
+
 /**
  * Follows one Reel's progress across samples. Reels loop, so the video has
  * played to the end when the bar jumps from near the end back to the start.
+ * A single bad reading (bright frames under the bar) can look like that jump,
+ * so a fall from mid-video only counts once the next reading stays low too;
+ * otherwise the odd reading is dropped.
  */
 export class ReelWatchTracker {
     private samples: ProgressSample[] = [];
+    /** Progress before an unconfirmed fall from mid-video. */
+    private fellFrom: number | undefined;
 
     add(sample: ProgressSample): WatchState {
         const previous = this.samples.at(-1);
         this.samples.push(sample);
-        if (previous && sample.progress < previous.progress - 0.3) {
-            return { kind: 'completed', durationMs: this.estimateDurationMs() };
+        if (this.fellFrom !== undefined) {
+            const fellFrom = this.fellFrom;
+            this.fellFrom = undefined;
+            if (sample.progress < fellFrom - LOOP_DROP) return { kind: 'completed', durationMs: this.estimateDurationMs() };
+            // The fall was one bad reading: forget it.
+            this.samples.splice(this.samples.length - 2, 1);
+            return { kind: 'watching' };
+        }
+        if (previous && sample.progress < previous.progress - LOOP_DROP) {
+            if (previous.progress >= CLEAR_LOOP_FROM) return { kind: 'completed', durationMs: this.estimateDurationMs() };
+            this.fellFrom = previous.progress;
         }
         return { kind: 'watching' };
     }
 
     /** Video length from the samples taken before the loop. */
     estimateDurationMs(): number | undefined {
-        // Before the wrap: the last sample is the first one of the new loop.
+        // The last sample before the bar fell back to the start.
         let end = this.samples.length - 1;
-        if (end >= 1 && this.samples[end]!.progress < this.samples[end - 1]!.progress) end -= 1;
+        for (let index = 1; index < this.samples.length; index++) {
+            if (this.samples[index]!.progress < this.samples[index - 1]!.progress - LOOP_DROP) {
+                end = index - 1;
+                break;
+            }
+        }
         const first = this.samples[0];
         const last = this.samples[end];
         if (!first || !last) return undefined;

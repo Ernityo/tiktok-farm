@@ -8,12 +8,13 @@ import {
     activeDevices, loadRegisteredDevices, resolveDeviceCoordinates, WdaRemoteControl,
 } from '@git-agni/phone-farm-core';
 import type { RegisteredDevice } from '../devices/registry.js';
-import { appLaunchSettleMs, swipeCoordinates, switchTikTokAccount, tapCoordinate } from './actions.js';
+import { appLaunchSettleMs, swipeCoordinates, tapCoordinate } from './actions.js';
 import { adFromWords, detectAdStrict, readCaptionWords, type AdDetection } from './ad-detection.js';
-import { FULL_WATCH_CAP_MS, timePlan, type AgentPlan, type TimedPlan } from './agent-plan.js';
+import { engagementAllowance, FULL_WATCH_CAP_MS, sameCaption, SHOP_POST, timePlan, type AgentPlan, type TimedPlan } from './agent-plan.js';
 import { ReelWatchTracker } from '../facebook/reels-progress.js';
-import type { Personality } from './doomscroll-profile.js';
+import { PROFILES, type Personality } from './doomscroll-profile.js';
 import { detectEngagementControls, type EngagementControls } from './engagement-controls.js';
+import type { OcrWord } from './ocr.js';
 import { nicheForAccount, normalizeHandle, type Niche } from './niche.js';
 import { coordinateProfile, registeredAccounts } from './runtime-settings.js';
 import { readTikTokProgress } from './video-progress.js';
@@ -39,6 +40,16 @@ const SETTLE_MS = envInteger('AGENT_SETTLE_MS', 400, 0, 5000);
 const IMAGE_WIDTH = envInteger('AGENT_IMAGE_WIDTH', 384, 160, 1200);
 const IMAGE_QUALITY = envInteger('AGENT_IMAGE_QUALITY', 60, 20, 95);
 const CAPTION_MAX_CHARS = 400;
+/**
+ * Caption area (left of the button rail, above the tab bar) sent at full
+ * resolution as a second image: small grey text such as TikTok's translation
+ * link ("Voir l'original") is unreadable in the downscaled screenshot.
+ */
+const CAPTION_CROP = { left: 0, top: 0.62, width: 0.85, height: 0.3 };
+const CAPTION_CROP_WIDTH = 640;
+/** Extra swipes when the feed did not move on (same caption as before). */
+const MAX_SWIPE_RETRIES = 2;
+
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, ms)));
 
@@ -56,10 +67,14 @@ export interface Observation {
     video: number;
     /** Small JPEG of the screen. */
     image: Buffer;
+    /** The caption area at full resolution (JPEG). */
+    captionImage: Buffer;
     /** OCR of the caption area: handle, caption, hashtags, sound name. Can be noisy. */
     caption: string;
     isAd: boolean;
     remainingMs: number;
+    /** Likes/saves done so far, and how many the rate allows if this video is liked/saved. */
+    engagement: { likes: number; likesAllowed: number; saves: number; savesAllowed: number };
 }
 
 export interface SessionSummary {
@@ -143,7 +158,7 @@ export class TikTokAgentSession {
         readonly personality: Personality,
     ) {}
 
-    /** Unlocks the phone, opens TikTok on the account, and observes the first video. */
+    /** Unlocks the phone, opens TikTok (already on the account), and observes the first video. */
     static async start(options: StartOptions): Promise<{ session: TikTokAgentSession; observation: Observation }> {
         const device = resolveDevice(await loadRegisteredDevices(), options.udid);
         const account = options.account ? normalizeHandle(options.account) : undefined;
@@ -196,14 +211,8 @@ export class TikTokAgentSession {
             await driver.updateSettings({ defaultActiveApplication: bundleId });
             await driver.pause(appLaunchSettleMs()); // let a launch ad settle
             const tiktok = coordinates.tiktok;
-            if (account) {
-                await switchTikTokAccount(driver, remoteControl, device.udid, account, {
-                    profileTabX: tiktok.profileTab.x, profileTabY: tiktok.profileTab.y,
-                    switcherTriggerX: tiktok.accountSwitcher.x, switcherTriggerY: tiktok.accountSwitcher.y,
-                });
-                await tapCoordinate(driver, tiktok.homeTab.x, tiktok.homeTab.y, 'Home tab');
-                await driver.pause(1500);
-            }
+            // No account switching for now: the phone must already be on `account`,
+            // which only selects the niche.
             const { scale } = await remoteControl.getScreenInfo(device.udid);
             const stamp = new Date().toISOString().replace(/[:.]/g, '-');
             const logDirectory = path.resolve('.agent-runs', `${stamp}-${(account ?? 'current').replace(/^@/, '')}`);
@@ -227,15 +236,42 @@ export class TikTokAgentSession {
         return Math.max(0, this.deadline - Date.now());
     }
 
-    private async observe(arrivedAt: number): Promise<Observation> {
+    private async capture(): Promise<{ screenshot: Buffer; words: OcrWord[]; image: Buffer; captionImage: Buffer; caption: string }> {
         await sleep(SETTLE_MS);
         const screenshot = await this.remoteControl.getScreenshot(this.device.udid);
-        const [words, image] = await Promise.all([
-            readCaptionWords(screenshot).catch(() => []),
+        const [words, image, captionImage] = await Promise.all([
+            readCaptionWords(screenshot).catch((): OcrWord[] => []),
             sharp(screenshot).resize({ width: IMAGE_WIDTH }).jpeg({ quality: IMAGE_QUALITY }).toBuffer(),
+            this.captionCrop(screenshot),
         ]);
+        return { screenshot, words, image, captionImage, caption: words.map((word) => word.text).join(' ').slice(0, CAPTION_MAX_CHARS) };
+    }
+
+    private async captionCrop(screenshot: Buffer): Promise<Buffer> {
+        const { width = 0, height = 0 } = await sharp(screenshot).metadata();
+        return sharp(screenshot)
+            .extract({
+                left: Math.round(width * CAPTION_CROP.left),
+                top: Math.round(height * CAPTION_CROP.top),
+                width: Math.round(width * CAPTION_CROP.width),
+                height: Math.round(height * CAPTION_CROP.height),
+            })
+            .resize({ width: CAPTION_CROP_WIDTH, withoutEnlargement: true })
+            .jpeg({ quality: 70 })
+            .toBuffer();
+    }
+
+    private async observe(arrivedAt: number, previousCaption?: string): Promise<Observation> {
+        let { screenshot, words, image, captionImage, caption } = await this.capture();
+        // A swipe can fail to move the feed on (seen on TikTok Shop posts):
+        // the same video is still there, so swipe again from higher up.
+        for (let retry = 1; retry <= MAX_SWIPE_RETRIES && previousCaption && sameCaption(previousCaption, caption); retry++) {
+            console.log(`[agent] swipe did not move the feed on; swiping again (${retry}/${MAX_SWIPE_RETRIES})`);
+            await this.swipe(true);
+            arrivedAt = Date.now();
+            ({ screenshot, words, image, captionImage, caption } = await this.capture());
+        }
         const ad = adFromWords(words);
-        const caption = words.map((word) => word.text).join(' ').slice(0, CAPTION_MAX_CHARS);
         this.videos += 1;
         this.current = {
             index: this.videos,
@@ -245,8 +281,20 @@ export class TikTokAgentSession {
             ad,
             strictAd: ad.isAd ? Promise.resolve(ad) : detectAdStrict(screenshot).catch(() => ({ isAd: false })),
         };
-        await writeFile(path.join(this.logDirectory, `${String(this.videos).padStart(4, '0')}.jpg`), image).catch(() => undefined);
-        return { video: this.videos, image, caption, isAd: ad.isAd, remainingMs: this.remainingMs };
+        const stem = path.join(this.logDirectory, String(this.videos).padStart(4, '0'));
+        await Promise.all([
+            writeFile(`${stem}.jpg`, image).catch(() => undefined),
+            writeFile(`${stem}-caption.jpg`, captionImage).catch(() => undefined),
+        ]);
+        const judgedIncludingThis = this.decisionMs.length + 1;
+        const profile = PROFILES[this.personality];
+        return {
+            video: this.videos, image, captionImage, caption, isAd: ad.isAd, remainingMs: this.remainingMs,
+            engagement: {
+                likes: this.likes, likesAllowed: engagementAllowance(judgedIncludingThis, profile.likeChance),
+                saves: this.saves, savesAllowed: engagementAllowance(judgedIncludingThis, profile.saveChance),
+            },
+        };
     }
 
     private async locateControls(): Promise<EngagementControls | undefined> {
@@ -264,8 +312,9 @@ export class TikTokAgentSession {
     /**
      * Carries out the plan for the current video, swipes, and observes the
      * next one. Returns a summary instead once the session time is up.
+     * `logExtra` is added to this video's line in decisions.jsonl.
      */
-    async step(plan: AgentPlan): Promise<{ observation: Observation } | { summary: SessionSummary }> {
+    async step(plan: AgentPlan, logExtra: Record<string, unknown> = {}): Promise<{ observation: Observation } | { summary: SessionSummary }> {
         if (this.closed) return { summary: this.closed };
         if (this.busy) throw new Error('A step is already running');
         const video = this.current;
@@ -313,16 +362,16 @@ export class TikTokAgentSession {
                 this.skips += 1;
                 this.skipScreenMs.push(Date.now() - video.arrivedAt);
             }
-            await this.swipe(ad.isAd);
+            await this.swipe(ad.isAd || SHOP_POST.test(video.caption));
             const arrivedAt = Date.now();
 
             await appendFile(path.join(this.logDirectory, 'decisions.jsonl'), `${JSON.stringify({
                 video: video.index, caption: video.caption, isAd: ad.isAd, plan, timed, watched, liked, saved,
-                decisionMs: decidedAt - video.observedAt, screenMs: arrivedAt - video.arrivedAt,
+                decisionMs: decidedAt - video.observedAt, screenMs: arrivedAt - video.arrivedAt, ...logExtra,
             })}\n`).catch(() => undefined);
 
             if (this.remainingMs <= 0) return { summary: await this.stop('completed') };
-            return { observation: await this.observe(arrivedAt) };
+            return { observation: await this.observe(arrivedAt, video.caption) };
         } finally {
             this.busy = false;
         }

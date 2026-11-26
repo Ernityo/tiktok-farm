@@ -73,3 +73,21 @@ test('a loop caught after too little progress has no duration estimate', () => {
     tracker.add({ atMs: 0, progress: 0.95 });
     assert.deepEqual(tracker.add({ atMs: 1_500, progress: 0.02 }), { kind: 'completed', durationMs: undefined });
 });
+
+test('one bad reading mid-video is not a loop', () => {
+    const tracker = new ReelWatchTracker();
+    tracker.add({ atMs: 0, progress: 0.2 });
+    tracker.add({ atMs: 1_000, progress: 0.4 });
+    assert.deepEqual(tracker.add({ atMs: 2_000, progress: 0.01 }), { kind: 'watching' });
+    assert.deepEqual(tracker.add({ atMs: 3_000, progress: 0.45 }), { kind: 'watching' });
+    assert.deepEqual(tracker.add({ atMs: 4_000, progress: 0.5 }), { kind: 'watching' });
+});
+
+test('a loop from mid-bar counts once the next reading confirms it', () => {
+    const tracker = new ReelWatchTracker();
+    tracker.add({ atMs: 0, progress: 0.2 });
+    tracker.add({ atMs: 3_000, progress: 0.8 });
+    assert.deepEqual(tracker.add({ atMs: 4_000, progress: 0.05 }), { kind: 'watching' });
+    // 0.6 of the video in 3 s → a 5 s video.
+    assert.deepEqual(tracker.add({ atMs: 5_000, progress: 0.2 }), { kind: 'completed', durationMs: 5_000 });
+});

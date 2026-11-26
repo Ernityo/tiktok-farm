@@ -27,8 +27,13 @@ function observationContent(observation: Observation): Content[] {
     const caption = observation.caption ? `caption (OCR, noisy): ${observation.caption}` : 'caption: (none read)';
     return [
         { type: 'image', data: observation.image.toString('base64'), mimeType: 'image/jpeg' },
-        { type: 'text', text: `video ${observation.video} · ${formatRemaining(observation.remainingMs)} left${observation.isAd ? ' · AD' : ''}\n${caption}` },
+        { type: 'text', text: `video ${observation.video} · ${formatRemaining(observation.remainingMs)} left${observation.isAd ? ' · AD' : ''}\n${engagementText(observation)}\n${caption}` },
     ];
+}
+
+function engagementText({ engagement: e }: Observation): string {
+    const likeHint = e.likes < e.likesAllowed ? ' → behind: like this one if it is clearly on-niche' : '';
+    return `likes ${e.likes}/${e.likesAllowed} allowed${likeHint} · saves ${e.saves}/${e.savesAllowed} allowed`;
 }
 
 function nicheText(niche: Niche): string {
@@ -57,13 +62,13 @@ const server = new McpServer({ name: 'tiktok-agent', version: '0.1.0' });
 
 server.registerTool('tiktok_start', {
     title: 'Start agentic TikTok doomscroll',
-    description: 'Unlocks the phone, opens TikTok on the account and returns the niche plus the first video. '
+    description: 'Unlocks the phone, opens TikTok (already on the account) and returns the niche plus the first video. '
         + 'Then call tiktok_step once per video until it reports the session is over.',
     inputSchema: {
         minutes: z.number().int().min(1).max(60).describe('Session length in minutes'),
         personality: z.enum(['skimmer', 'casual', 'engaged']).default('casual')
             .describe('Viewer type: caps likes/saves and sets watch lengths (default casual)'),
-        account: z.string().optional().describe('TikTok handle to switch to, e.g. @fitjulie; its saved niche is used'),
+        account: z.string().optional().describe('TikTok handle the phone is already on, e.g. @fitjulie; its saved niche is used (no switching)'),
         niche: z.string().max(1000).optional().describe('Niche description; overrides the saved one'),
         udid: z.string().optional().describe('Device UDID; only needed when several phones are registered'),
     },
@@ -98,8 +103,8 @@ server.registerTool('tiktok_step', {
         + 'Decide fast and call this right away with no commentary: while you think the video keeps playing, '
         + 'so slow decisions make off-niche videos look watched. '
         + 'Off-niche or ad: watch "skip", no like/save. Unsure: "short". Clearly on-niche: "full". '
-        + 'Like/save only to stay near the like/save rates tiktok_start gave (shares of ALL videos, not of on-niche ones): '
-        + 'like the strongest on-niche videos, save rarely, vary like_at_ms (2000-12000). '
+        + 'Each video shows likes done vs allowed so far: when likes are below the allowance, like the next clearly on-niche "full" video; '
+        + 'at the allowance, do not like. Save rarely, standout videos only. Vary like_at_ms (2000-12000). '
         + 'Watch time is the main niche signal, likes come second. The code adds randomness and drops likes/saves over the rate.',
     inputSchema: {
         on_niche: z.number().min(0).max(1).describe('How sure you are the video is on-niche'),

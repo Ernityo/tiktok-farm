@@ -41,6 +41,7 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.web.json --noEmit",
     "test": "node --import tsx --test test/*.test.ts",
     "check": "npm run typecheck && npm test",
+    "agent:scroll": "node --env-file-if-exists=.env --env-file-if-exists=.env.devices --import tsx src/tiktok/agent-runner.ts",
     "agent:mcp": "node --env-file-if-exists=.env --env-file-if-exists=.env.devices --import tsx src/tiktok/agent-mcp.ts",
     "detect:check": "node --env-file-if-exists=.env --env-file-if-exists=.env.devices --import tsx src/tiktok/detect-controls-check.ts"
   },

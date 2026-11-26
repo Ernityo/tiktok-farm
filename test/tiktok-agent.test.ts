@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { timePlan, WATCH_RANGES, withinBudget } from '../src/tiktok/agent-plan.js';
+import { engagementAllowance, sameCaption, timePlan, WATCH_RANGES, withinBudget } from '../src/tiktok/agent-plan.js';
+import { parseReply, systemPrompt } from '../src/tiktok/agent-model.js';
 import { accountNiches, nicheForAccount, parseNiche, pruneNiches } from '../src/tiktok/niche.js';
 import type { RegisteredDevice } from '../src/types.js';
 
@@ -89,4 +90,54 @@ test('a casual agent following every like plan lands near 18%', () => {
         if (timed.likeAtMs !== undefined) likes += 1;
     }
     assert.ok(likes >= 16 && likes <= 19, `likes=${likes}`);
+});
+
+test('the like allowance grows with videos judged and always allows one', () => {
+    assert.equal(engagementAllowance(1, 0.17), 1);
+    assert.equal(engagementAllowance(10, 0.17), 2);
+    assert.equal(engagementAllowance(28, 0.17), 5);
+});
+
+test('a stuck swipe shows the same caption, even with OCR noise', () => {
+    assert.ok(sameCaption(
+        '@ BLACK FRIDAY - CP - Eau de parfum 50... By Enzo Commission payée - )',
+        'BLACK FRIDAY - CP - Eau de parfum 50... By Enzo Commission payée - )',
+    ));
+});
+
+test('different videos, even from one series, are not the same caption', () => {
+    assert.ok(!sameCaption(
+        'Salade2fruits Partie 2 Elle s’est fait refaire la tête pour qu on arrête de se moquer',
+        'Salade2fruits Elle a menti sur sa photo pour avoir son premier rendez-vous',
+    ));
+    // Too little text to tell.
+    assert.ok(!sameCaption('Angel.', 'Angel.'));
+});
+
+test('a model reply becomes a plan, with the like timing chosen in code', () => {
+    const { plan, foreign } = parseReply('{"foreign": false, "on_niche": 0.9, "watch": "full", "like": true, "save": false}', () => 0.5);
+    assert.deepEqual(plan, { onNiche: 0.9, watch: 'full', likeAtMs: 7000, save: false });
+    assert.equal(foreign, false);
+});
+
+test('likes and saves on anything but a full watch are dropped', () => {
+    const { plan } = parseReply('```json\n{"on_niche": 0.4, "watch": "short", "like": true, "save": true}\n```');
+    assert.deepEqual(plan, { onNiche: 0.4, watch: 'short', likeAtMs: null, save: false });
+});
+
+test('a reply without a valid watch choice is rejected', () => {
+    assert.throws(() => parseReply('{"on_niche": 0.4, "watch": "maybe"}'));
+    assert.throws(() => parseReply('not json'));
+});
+
+test('the system prompt carries the niche and its avoid list', () => {
+    const prompt = systemPrompt({ description: 'animated AI dramas', keywords: [], avoid: ['politics'] }, 'casual');
+    assert.match(prompt, /niche: animated AI dramas/);
+    assert.match(prompt, /avoid: politics/);
+});
+
+test('a video not in the account language is skipped whatever the model planned', () => {
+    const { plan, foreign } = parseReply('{"foreign": true, "on_niche": 0.95, "watch": "full", "like": true}');
+    assert.equal(foreign, true);
+    assert.deepEqual(plan, { onNiche: 0, watch: 'skip', likeAtMs: null, save: false });
 });

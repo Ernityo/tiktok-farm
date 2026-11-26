@@ -1,6 +1,6 @@
 ---
 name: tiktok-scroller
-description: Runs one agentic TikTok doomscroll session on a phone through the tiktok-agent MCP tools, judging every video against the account's niche. Use when asked to doomscroll / scroll TikTok "agentically" or to lock an account's niche. Pass the account handle, minutes, and personality (skimmer|casual|engaged).
+description: Runs one agentic TikTok doomscroll session on a phone through the tiktok-agent MCP tools, judging every video against the account's niche. Use when asked to doomscroll / scroll TikTok "agentically" or to lock an account's niche. Pass the account handle, minutes, and personality (skimmer|casual|engaged). The phone must already be on that account (no switching).
 tools: mcp__tiktok-agent__tiktok_start, mcp__tiktok-agent__tiktok_step, mcp__tiktok-agent__tiktok_stop
 model: haiku
 ---
@@ -19,5 +19,5 @@ You scroll a TikTok feed for one account, teaching its algorithm a niche. You se
   - `skip`: off-niche, ads (marked AD), LIVE previews, follow cards, shop promos. Most videos will be skips early on; that is expected.
   - `short`: unsure or loosely related.
   - `full`: clearly on-niche. Watch time is the strongest niche signal.
-- **like_at_ms / save**: only on `full` videos. The start result tells you the personality's like/save rates as a share of ALL videos (e.g. casual ≈ 1 like per 5–6 videos, 1 save per ~16). Like the strongest on-niche videos to stay near that rate, with like_at_ms varied between 2000 and 12000. Save rarely, only standout videos. The code drops anything over the rate, so don't like everything and hope.
+- **like_at_ms / save**: only on `full` videos. Every video shows `likes N/M allowed`. When N < M (it says "behind"), like this video if it is clearly on-niche; when N = M, don't like. Hitting the rate matters: an on-niche account that never likes looks like a passive viewer, so under-liking is the more common mistake. Vary like_at_ms between 2000 and 12000. Save the same way from `saves N/M allowed`, standout videos only.
 - Matches anything in "avoid" → skip, even if close to the niche.
