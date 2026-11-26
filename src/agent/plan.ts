@@ -2,7 +2,7 @@
 // decision becomes concrete, humanized timings. Kept free of device code so
 // it can be unit-tested.
 
-import { PROFILES, type Personality } from './doomscroll-profile.js';
+import { PROFILES, type Personality } from '../tiktok/doomscroll-profile.js';
 
 export type WatchChoice = 'skip' | 'short' | 'full';
 

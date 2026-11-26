@@ -1,28 +1,32 @@
-// Instagram Reels for the agentic doomscroll (src/agent/reels-session.ts).
+// Instagram Reels for the agentic doomscroll (src/agent/session.ts).
 // Read from the accessibility tree, like the programmatic Reels doomscroll:
 // the Reels tab, J'aime and whether it is pressed, "Sponsorisée", the video
 // progress, and which Reel is on screen.
 
-import type { ReelsAppAdapter, ReelsContext } from '../agent/reels-session.js';
+import type { AgentAppAdapter, AppContext } from '../agent/session.js';
 import { INSTAGRAM_PLUGIN_ID } from '../instagram-plugin.js';
 import { swipeCoordinates, tapCoordinate } from '../tiktok/actions.js';
 import { findReelsTab, parseSource, readReelScreen, type ReelScreen, type SourceNode } from './reels-screen.js';
 
-async function readTree(context: ReelsContext): Promise<SourceNode> {
+async function readTree(context: AppContext): Promise<SourceNode> {
     return parseSource(await context.driver.execute('mobile: source', { format: 'json' }));
 }
 
-async function readScreen(context: ReelsContext): Promise<ReelScreen> {
+async function readScreen(context: AppContext): Promise<ReelScreen> {
     return readReelScreen(await readTree(context));
 }
 
-export const instagramAdapter: ReelsAppAdapter = {
+export const instagramAdapter: AgentAppAdapter = {
     app: 'instagram',
     label: 'Instagram',
     pluginId: INSTAGRAM_PLUGIN_ID,
     bundleId: process.env.INSTAGRAM_BUNDLE_ID ?? 'com.burbn.instagram',
+    canSave: false,
+    // Left of the button column, above the tab bar, sent at full resolution.
+    captionCrop: { left: 0, top: 0.6, width: 0.85, height: 0.32 },
+    tapRadius: 4,
 
-    async openReels(context) {
+    async openFeed(context) {
         const tab = findReelsTab(await readTree(context));
         if (!tab) throw new Error('Could not find the Instagram Reels tab (is Instagram logged in?)');
         await tapCoordinate(context.driver, tab.x, tab.y, 'Reels tab', { radius: 6 });
@@ -46,12 +50,12 @@ export const instagramAdapter: ReelsAppAdapter = {
         return { isAd: screen.kind === 'ad', ...(screen.reelId ? { reelId: screen.reelId } : {}) };
     },
 
-    async locateLike(context, reelId) {
+    async locateControls(context, reelId) {
         const screen = await readScreen(context);
         if (screen.kind !== 'reel' || !screen.like) return undefined;
         // Instagram can move to the next Reel on its own; never like that one.
         if (reelId && screen.reelId !== reelId) return undefined;
-        return screen.like;
+        return { like: screen.like };
     },
 
     async readProgress(context) {

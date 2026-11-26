@@ -5,10 +5,10 @@
 
 import { z } from 'zod';
 
-import type { AgentPlan } from './agent-plan.js';
-import type { Observation } from './agent-session.js';
-import type { Personality } from './doomscroll-profile.js';
-import type { Niche } from './niche.js';
+import type { AgentPlan } from './plan.js';
+import type { Observation } from './session.js';
+import type { Personality } from '../tiktok/doomscroll-profile.js';
+import type { Niche } from '../tiktok/niche.js';
 
 export const DEFAULT_AGENT_MODEL = 'deepseek/deepseek-v4.1-flash-1017';
 const ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';

@@ -14,12 +14,15 @@ import { parseArgs } from 'node:util';
 
 import { loadRegisteredDevices } from '@git-agni/phone-farm-core';
 
-import { DEFAULT_AGENT_MODEL, OpenRouterDecider, systemPrompt } from './agent-model.js';
-import { autoSkipReason, engagementAllowance, type AgentPlan } from './agent-plan.js';
-import { PROFILES, type Personality } from './doomscroll-profile.js';
-import { nicheForAccount, type Niche } from './niche.js';
+import { AGENT_ADAPTERS } from './adapters.js';
+import { DEFAULT_AGENT_MODEL, OpenRouterDecider, systemPrompt, type AgentApp } from './model.js';
+import { autoSkipReason, engagementAllowance, type AgentPlan } from './plan.js';
+import { PROFILES, type Personality } from '../tiktok/doomscroll-profile.js';
+import { nicheForAccount, type Niche } from '../tiktok/niche.js';
 
 interface RecordedSession {
+    /** Missing on runs recorded before Facebook/Instagram support: TikTok. */
+    app?: AgentApp;
     udid?: string;
     account?: string;
     niche: Niche;
@@ -31,6 +34,8 @@ interface RecordedDecision {
     caption: string;
     isAd: boolean;
     plan: AgentPlan;
+    /** Why the run skipped it without the model ('ad', 'card', 'foreign', 'model-error', ...). */
+    auto?: string;
 }
 
 const { values, positionals } = parseArgs({
@@ -49,6 +54,8 @@ if (!apiKey) throw new Error('Set OPENROUTER_API_KEY in .env');
 const models = values.model?.length ? values.model : [DEFAULT_AGENT_MODEL];
 
 const session = JSON.parse(await readFile(path.join(runDir, 'session.json'), 'utf8')) as RecordedSession;
+const app: AgentApp = session.app ?? 'tiktok';
+const canSave = AGENT_ADAPTERS[app].canSave;
 const decisions = (await readFile(path.join(runDir, 'decisions.jsonl'), 'utf8'))
     .trim().split('\n').map((line) => JSON.parse(line) as RecordedDecision);
 
@@ -56,7 +63,7 @@ async function currentNiche(): Promise<{ niche: Niche; source: string }> {
     if (values.niche) return { niche: { description: values.niche, keywords: [], avoid: [] }, source: '--niche' };
     if (session.account) {
         const device = (await loadRegisteredDevices()).find((entry) => entry.udid === session.udid);
-        const saved = nicheForAccount(device, session.account);
+        const saved = nicheForAccount(device, session.account, AGENT_ADAPTERS[app].pluginId) ?? nicheForAccount(device, session.account);
         if (saved) return { niche: saved, source: `saved niche of ${session.account}` };
     }
     return { niche: session.niche, source: 'niche recorded with the run' };
@@ -65,14 +72,14 @@ async function currentNiche(): Promise<{ niche: Niche; source: string }> {
 const { niche, source } = await currentNiche();
 const personality = session.personality;
 const profile = PROFILES[personality];
-console.log(`[bench] ${decisions.length} videos from ${runDir}`);
+console.log(`[bench] ${decisions.length} ${app} videos from ${runDir}`);
 console.log(`[bench] ${source}: ${niche.description}${niche.avoid.length ? ` · avoid: ${niche.avoid.join(', ')}` : ''} · ${personality} · language: ${values.language}`);
 
 const optional = async (file: string) => readFile(file).catch(() => undefined);
 const percentile = (sorted: number[], share: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * share))];
 
 for (const model of models) {
-    const decider = new OpenRouterDecider(apiKey, model, systemPrompt(niche, personality, values.language));
+    const decider = new OpenRouterDecider(apiKey, model, systemPrompt(niche, personality, values.language, app));
     console.log(`\n[bench] ${model}`);
     const times: number[] = [];
     let same = 0;
@@ -84,7 +91,8 @@ for (const model of models) {
         const stem = path.join(runDir, String(recorded.video).padStart(4, '0'));
         let watch: string;
         let note: string;
-        const skip = autoSkipReason(recorded);
+        // Cards and translated captions were spotted on the phone; the model never saw them.
+        const skip = autoSkipReason(recorded) ?? (recorded.auto && recorded.auto !== 'model-error' ? recorded.auto : undefined);
         if (skip) {
             watch = 'skip';
             note = `auto: ${skip}`;
@@ -105,7 +113,7 @@ for (const model of models) {
                     isAd: recorded.isAd,
                     engagement: {
                         likes, likesAllowed: engagementAllowance(judged, profile.likeChance),
-                        saves, savesAllowed: engagementAllowance(judged, profile.saveChance),
+                        saves, savesAllowed: canSave ? engagementAllowance(judged, profile.saveChance) : 0,
                     },
                 });
                 times.push(decision.ms);

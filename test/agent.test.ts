@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { engagementAllowance, finalLingerMs, sameCaption, sessionLengthMs, swipeRecord, timePlan, WATCH_RANGES, withinBudget } from '../src/tiktok/agent-plan.js';
-import { parseReply, systemPrompt, userText } from '../src/tiktok/agent-model.js';
+import { engagementAllowance, finalLingerMs, sameCaption, sessionLengthMs, swipeRecord, timePlan, WATCH_RANGES, withinBudget } from '../src/agent/plan.js';
+import { feedDidNotMove } from '../src/agent/session.js';
+import { parseReply, systemPrompt, userText } from '../src/agent/model.js';
 import { accountNiches, nicheForAccount, parseNiche, pruneNiches } from '../src/tiktok/niche.js';
 import type { RegisteredDevice } from '../src/types.js';
 
@@ -180,4 +181,16 @@ test('swipeRecord logs where the finger went and the upward distance', () => {
     assert.deepEqual(swipeRecord('right-thumb', { start: { x: 300, y: 480 }, end: { x: 320, y: 370 }, durationMs: 150 }), {
         style: 'right-thumb', from: { x: 300, y: 480 }, to: { x: 320, y: 370 }, dy: 110, ms: 150,
     });
+});
+
+test('feedDidNotMove prefers the app\'s video id over the caption', () => {
+    const caption = 'creator name morning routine gym motivation leg day';
+    assert.equal(feedDidNotMove({ caption }, { caption }), true);
+    assert.equal(feedDidNotMove({ caption }, { caption: 'another person cooking pasta dinner recipe tonight' }), false);
+    // Same caption but a different Reel (a creator's series): moved on.
+    assert.equal(feedDidNotMove({ caption, reelId: 'a' }, { caption, reelId: 'b' }), false);
+    // Different OCR noise on the same Reel: didn't move.
+    assert.equal(feedDidNotMove({ caption, reelId: 'a' }, { caption: 'x', reelId: 'a' }), true);
+    // Too little text to tell (cards): moved on.
+    assert.equal(feedDidNotMove({ caption: 'Suivre' }, { caption: 'Suivre' }), false);
 });

@@ -15,14 +15,12 @@
 
 import { parseArgs } from 'node:util';
 
-import { AGENT_APPS, DEFAULT_AGENT_MODEL, OpenRouterDecider, systemPrompt, type AgentApp, type ModelDecision } from './agent-model.js';
-import { autoSkipReason, type AgentPlan } from './agent-plan.js';
-import { TikTokAgentSession, type Observation, type SessionSummary } from './agent-session.js';
-import type { Personality } from './doomscroll-profile.js';
+import { AGENT_APPS, DEFAULT_AGENT_MODEL, OpenRouterDecider, systemPrompt, type AgentApp, type ModelDecision } from './model.js';
+import type { AgentPlan } from './plan.js';
+import type { Personality } from '../tiktok/doomscroll-profile.js';
 import { SWIPE_STYLES, type SwipeStyle } from '../devices/swipe-profiles.js';
-import { ReelsAgentSession } from '../agent/reels-session.js';
-import { facebookAdapter } from '../facebook/agent-adapter.js';
-import { instagramAdapter } from '../instagram/agent-adapter.js';
+import { AGENT_ADAPTERS } from './adapters.js';
+import { AgentSession, type Observation, type SessionSummary } from './session.js';
 
 const PERSONALITIES: readonly Personality[] = ['skimmer', 'casual', 'engaged'];
 /** Consecutive model failures before the session is stopped. */
@@ -77,9 +75,7 @@ const startOptions = {
     ...(values.niche ? { niche: { description: values.niche, keywords: [], avoid: [] } } : {}),
     ...(swipeStyle ? { swipeStyle } : {}),
 };
-const { session, observation: first } = app === 'tiktok'
-    ? await TikTokAgentSession.start(startOptions)
-    : await ReelsAgentSession.start({ ...startOptions, adapter: app === 'facebook' ? facebookAdapter : instagramAdapter });
+const { session, observation: first } = await AgentSession.start({ ...startOptions, adapter: AGENT_ADAPTERS[app] });
 const decider = new OpenRouterDecider(apiKey, model, systemPrompt(session.niche, personality, values.language, app));
 console.log(`[scroll] ${app} · ${session.account ?? 'current account'} · ${personality} · ${minutes} min · ${model}\n[scroll] niche: ${session.niche.description}${session.niche.avoid.length ? ` · avoid: ${session.niche.avoid.join(', ')}` : ''} · language: ${values.language}`);
 
@@ -98,7 +94,7 @@ try {
             summary = await session.stop('stopped');
             break;
         }
-        const skipReason = observation.autoSkip ?? autoSkipReason(observation);
+        const skipReason = observation.autoSkip;
         let plan: AgentPlan;
         let extra: Record<string, unknown>;
         if (skipReason) {

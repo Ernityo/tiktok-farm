@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "tiktok-agent": {
+    "doomscroll-agent": {
       "command": "npm",
       "args": ["run", "--silent", "agent:mcp"]
     }

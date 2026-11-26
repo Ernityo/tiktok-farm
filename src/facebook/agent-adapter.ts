@@ -1,15 +1,15 @@
-// Facebook Reels for the agentic doomscroll (src/agent/reels-session.ts).
+// Facebook Reels for the agentic doomscroll (src/agent/session.ts).
 // Everything is read from screenshots, like the programmatic Reels
 // doomscroll: the like/comment/share column, "Afficher l'original" on
 // translated captions, and the progress bar.
 
-import type { ReelsAppAdapter, ReelsContext } from '../agent/reels-session.js';
+import type { AgentAppAdapter, AppContext } from '../agent/session.js';
 import { FACEBOOK_PLUGIN_ID } from '../facebook-plugin.js';
 import { swipeCoordinates, tapCoordinate } from '../tiktok/actions.js';
 import { detectReelsControls, detectTranslatedCaption } from './reels-controls.js';
 import { readReelProgress } from './reels-progress.js';
 
-function layout(context: ReelsContext) {
+function layout(context: AppContext) {
     const facebook = context.coordinates.facebook;
     if (!facebook) {
         throw new Error('This phone\'s coordinate profile has no Facebook layout yet; only measured devices (iPhone XR) are supported');
@@ -17,13 +17,17 @@ function layout(context: ReelsContext) {
     return facebook;
 }
 
-export const facebookAdapter: ReelsAppAdapter = {
+export const facebookAdapter: AgentAppAdapter = {
     app: 'facebook',
     label: 'Facebook',
     pluginId: FACEBOOK_PLUGIN_ID,
     bundleId: process.env.FACEBOOK_BUNDLE_ID ?? 'com.facebook.Facebook',
+    canSave: false,
+    // Left of the button column, above the tab bar, sent at full resolution.
+    captionCrop: { left: 0, top: 0.6, width: 0.85, height: 0.32 },
+    tapRadius: 4,
 
-    async openReels(context) {
+    async openFeed(context) {
         const facebook = layout(context);
         // A cold launch opens the home feed; Reels is a tab away.
         await tapCoordinate(context.driver, facebook.reelsTab.x, facebook.reelsTab.y, 'Reels tab', { radius: 6 });
@@ -52,9 +56,9 @@ export const facebookAdapter: ReelsAppAdapter = {
         return { isAd: false, noControls };
     },
 
-    async locateLike(context) {
+    async locateControls(context) {
         const controls = await detectReelsControls(await context.screenshot(), context.scale);
-        return controls ? { ...controls.like, liked: controls.liked } : undefined;
+        return controls ? { like: { ...controls.like, liked: controls.liked } } : undefined;
     },
 
     async readProgress(context) {
