@@ -17,6 +17,12 @@ test('parseNiche trims, splits comma strings and dedupes', () => {
     });
 });
 
+test('parseNiche keeps an optional persona', () => {
+    assert.equal(parseNiche({ description: 'x', persona: '  barista, 30  ' }).persona, 'barista, 30');
+    assert.equal('persona' in parseNiche({ description: 'x', persona: ' ' }), false);
+    assert.throws(() => parseNiche({ description: 'x', persona: 'a'.repeat(501) }), /Persona/);
+});
+
 test('parseNiche rejects an empty description and bad lists', () => {
     assert.throws(() => parseNiche({ description: '  ' }), /Describe the niche/);
     assert.throws(() => parseNiche({ description: 'x', keywords: [1] }), /list of strings/);

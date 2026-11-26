@@ -6,7 +6,13 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 
 import { AGENT_ADAPTERS } from './adapters.js';
-import { AgentSession, resolveDevice, type Observation, type SessionSummary } from './session.js';
+import { AgentSession, connectApp, resolveDevice, type Observation, type SessionSummary } from './session.js';
+import { AppStuckError, MAX_COMMENT_LENGTH, sanitizeComment } from './comment.js';
+import { leaveComment, type CommentSheetSpec } from './comment-flow.js';
+import { FACEBOOK_COMMENT_SHEET } from '../facebook/comment.js';
+import { INSTAGRAM_COMMENT_SHEET } from '../instagram/comment.js';
+
+const COMMENT_SHEETS: Record<'facebook' | 'instagram', CommentSheetSpec> = { facebook: FACEBOOK_COMMENT_SHEET, instagram: INSTAGRAM_COMMENT_SHEET };
 import { AGENT_APPS, type AgentApp } from './model.js';
 import type { AgentPlan } from './plan.js';
 import { PROFILES, type Personality } from '../tiktok/doomscroll-profile.js';
@@ -46,7 +52,8 @@ function observationContent(observation: Observation): Content[] {
 function engagementText({ engagement: e }: Observation): string {
     const likeHint = e.likes < e.likesAllowed ? ' → behind: like this one if it is clearly on-niche' : '';
     const saves = session?.app === 'tiktok' ? ` · saves ${e.saves}/${e.savesAllowed} allowed` : '';
-    return `likes ${e.likes}/${e.likesAllowed} allowed${likeHint}${saves}`;
+    const comments = (e.commentsAllowed ?? 0) > (e.comments ?? 0) ? ` · comments ${e.comments ?? 0}/${e.commentsAllowed} allowed` : '';
+    return `likes ${e.likes}/${e.likesAllowed} allowed${likeHint}${saves}${comments}`;
 }
 
 /** Steps past videos the session already knows to skip; returns the next one to judge, or the summary. */
@@ -65,13 +72,17 @@ function nicheText(niche: Niche): string {
         `niche: ${niche.description}`,
         niche.keywords.length ? `keywords: ${niche.keywords.join(', ')}` : '',
         niche.avoid.length ? `avoid: ${niche.avoid.join(', ')}` : '',
+        niche.persona ? `persona (voice of comments): ${niche.persona}` : '',
     ].filter(Boolean).join('\n');
 }
 
 function personalityText(personality: Personality, app: AgentApp): string {
     const { likeChance, saveChance } = PROFILES[personality];
     const percent = (value: number) => `${Math.round(value * 100)}%`;
-    if (app !== 'tiktok') return `${personality} viewer: like ~${percent(likeChance)} of all videos (extra likes are dropped; no saves on ${app})`;
+    if (app !== 'tiktok') {
+        return `${personality} viewer: like ~${percent(likeChance)} of all videos (extra likes are dropped; no saves on ${app}). `
+            + 'Comment only when a video shows a "comments N/M allowed" line, rarely, on a clearly on-niche full watch';
+    }
     return `${personality} viewer: like ~${percent(likeChance)} and save ~${percent(saveChance)} of all videos (extra likes/saves are dropped)`;
 }
 
@@ -147,11 +158,16 @@ server.registerTool('doomscroll_step', {
         watch: z.enum(['skip', 'short', 'full']).describe('skip = swipe now; short = a few seconds; full = watch to the end'),
         like_at_ms: z.number().int().min(0).max(30000).nullable().optional().describe('When to like, ms from now; null = no like'),
         save: z.boolean().optional().describe('Bookmark the video (TikTok only; ignored on Facebook/Instagram)'),
+        comment: z.string().max(300).nullable().optional().describe('Facebook/Instagram only, "full" videos only, and only while the video shows '
+            + '"comments N/M allowed" with some left; omit or null otherwise (almost always). Written as the persona from doomscroll_start, the way '
+            + 'she texts a friend in the account\'s language: all lowercase, no punctuation, no emojis, 2-10 words, casual, about something specific '
+            + 'in this video, not polite, never generic. Punctuation, capitals and accents are stripped before typing anyway'),
     },
-}, async ({ on_niche, watch, like_at_ms, save }) => {
+}, async ({ on_niche, watch, like_at_ms, save, comment }) => {
     if (!session) return failure('No session running; call doomscroll_start first');
     try {
-        const result = await skipAutomatic(session, await session.step({ onNiche: on_niche, watch, likeAtMs: like_at_ms ?? null, save: save ?? false }));
+        const plan = { onNiche: on_niche, watch, likeAtMs: like_at_ms ?? null, save: save ?? false, ...(comment ? { comment } : {}) };
+        const result = await skipAutomatic(session, await session.step(plan));
         if ('summary' in result) {
             session = undefined;
             return { content: [{ type: 'text' as const, text: summaryText(result.summary) }] };
@@ -207,6 +223,43 @@ server.registerTool('type_text', {
             }],
         };
     } catch (error) {
+        return failure(error);
+    }
+});
+
+server.registerTool('comment_reel', {
+    title: 'Comment on the Reel on screen',
+    description: 'Leaves a comment on the Facebook or Instagram Reel the phone is showing right now (the app must already be open on a Reel; '
+        + 'it is not relaunched). Taps the comment button, waits for the comment sheet, types the text like a person, taps send, '
+        + 'checks the app took it, and closes the sheet. One line, letters/digits/basic punctuation: accents, emojis, hashtags, '
+        + `mentions and links are dropped; max ${MAX_COMMENT_LENGTH} characters. Not available while a doomscroll runs: comments there go through doomscroll_step.`,
+    inputSchema: {
+        app: z.enum(['facebook', 'instagram']).describe('The app showing the Reel'),
+        text: z.string().min(1).max(300).describe('The comment to leave'),
+        udid: z.string().optional().describe('Device UDID; only needed when several phones are registered'),
+    },
+}, async ({ app, text, udid }) => {
+    if (session) return failure('A doomscroll session is running on the phone; pass comment to doomscroll_step instead');
+    const clean = sanitizeComment(text);
+    if (!clean) return failure('Nothing typeable is left in that comment (it needs letters or digits)');
+    try {
+        const device = resolveDevice(await loadRegisteredDevices(), udid);
+        const context = await connectApp(device, AGENT_ADAPTERS[app].bundleId, { launch: false });
+        try {
+            const outcome = await leaveComment(context, COMMENT_SHEETS[app], clean);
+            const seconds = (outcome.durationMs / 1000).toFixed(1);
+            return {
+                content: [{
+                    type: 'text' as const,
+                    text: `${outcome.verified ? 'Commented' : 'Sent the comment (the text box did not empty, so it may not be posted)'} ${JSON.stringify(clean)} in ${seconds}s `
+                        + `${JSON.stringify(outcome.steps)}${clean !== text ? ` (typed version of ${JSON.stringify(text)})` : ''}`,
+                }],
+            };
+        } finally {
+            await context.driver.deleteSession().catch(() => undefined);
+        }
+    } catch (error) {
+        if (error instanceof AppStuckError) return failure(`${error.message}. Check the phone: the comment sheet may still be open`);
         return failure(error);
     }
 });

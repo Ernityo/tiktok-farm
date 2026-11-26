@@ -1,10 +1,13 @@
 // Instagram Reels for the agentic doomscroll (src/agent/session.ts).
 // Read from the accessibility tree, like the programmatic Reels doomscroll:
 // the Reels tab, J'aime and whether it is pressed, "Sponsorisée", the video
-// progress, and which Reel is on screen.
+// progress, and which Reel is on screen. Comments go through the comment
+// sheet (src/instagram/comment.ts).
 
 import type { AgentAppAdapter, AppContext } from '../agent/session.js';
+import { leaveComment } from '../agent/comment-flow.js';
 import { INSTAGRAM_PLUGIN_ID } from '../instagram-plugin.js';
+import { INSTAGRAM_COMMENT_SHEET } from './comment.js';
 import { swipeCoordinates, tapCoordinate } from '../tiktok/actions.js';
 import { findReelsTab, parseSource, readReelScreen, type ReelScreen, type SourceNode } from './reels-screen.js';
 
@@ -71,6 +74,10 @@ export const instagramAdapter: AgentAppAdapter = {
     },
 
     // Upward swipe on the video: above the caption and the ad call-to-action strip.
+    async comment(context, text) {
+        return leaveComment(context, INSTAGRAM_COMMENT_SHEET, text);
+    },
+
     async fixedSwipe(context) {
         const { width, height } = context.window;
         const x = Math.round(width * 0.5);

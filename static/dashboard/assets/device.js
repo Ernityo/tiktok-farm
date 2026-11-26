@@ -77,6 +77,7 @@ const elements = {
     nicheDescription: element('#niche-description'),
     nicheKeywords: element('#niche-keywords'),
     nicheAvoid: element('#niche-avoid'),
+    nichePersona: element('#niche-persona'),
     nicheClear: element('#niche-clear'),
     nichesResult: element('#niches-result'),
     passcodeDialog: element('#passcode-dialog'),
@@ -869,6 +870,7 @@ function showNiche() {
     elements.nicheDescription.value = niche?.description ?? '';
     elements.nicheKeywords.value = niche?.keywords.join(', ') ?? '';
     elements.nicheAvoid.value = niche?.avoid.join(', ') ?? '';
+    elements.nichePersona.value = niche?.persona ?? '';
     elements.nichesResult.textContent = '';
 }
 function renderNicheAccounts() {
@@ -877,7 +879,7 @@ function renderNicheAccounts() {
     if (nicheAccounts.includes(previous))
         elements.nicheAccount.value = previous;
     const disabled = nicheAccounts.length === 0;
-    for (const control of [elements.nicheAccount, elements.nicheDescription, elements.nicheKeywords, elements.nicheAvoid, elements.nicheClear]) {
+    for (const control of [elements.nicheAccount, elements.nicheDescription, elements.nicheKeywords, elements.nicheAvoid, elements.nichePersona, elements.nicheClear]) {
         control.disabled = disabled;
     }
     showNiche();
@@ -914,6 +916,7 @@ elements.nichesForm.addEventListener('submit', (event) => {
         description: elements.nicheDescription.value.trim(),
         keywords: commaList(elements.nicheKeywords.value),
         avoid: commaList(elements.nicheAvoid.value),
+        ...(elements.nichePersona.value.trim() ? { persona: elements.nichePersona.value.trim() } : {}),
     });
 });
 elements.nicheClear.addEventListener('click', () => void saveNiche(null));

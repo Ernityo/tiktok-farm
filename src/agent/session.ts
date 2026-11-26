@@ -12,6 +12,7 @@ import { profileSwipe, resolveSwipeStyle, type SwipeProfile, type SwipeStyle } f
 import { ReelWatchTracker } from '../facebook/reels-progress.js';
 import { appLaunchSettleMs, performSwipe, tapCoordinate } from '../tiktok/actions.js';
 import { adFromWords, readCaptionWords } from '../tiktok/ad-detection.js';
+import { AppStuckError, commentAllowance, commentChance, commentOpen, commentWarmupMs } from './comment.js';
 import type { AgentApp } from './model.js';
 import {
     autoSkipReason, engagementAllowance, finalLingerMs, FULL_WATCH_CAP_MS, sameCaption, sessionLengthMs, SHOP_POST, swipeRecord, timePlan,
@@ -116,6 +117,12 @@ export interface AgentAppAdapter {
     fixedSwipe(context: AppContext): Promise<HumanSwipe>;
     /** Swipe for ads, shop posts and retries, starting above their buttons. Defaults to the normal swipe. */
     adSwipe?(context: AppContext): Promise<HumanSwipe>;
+    /**
+     * Leaves `text` (sanitized, one line) as a comment on the video on screen and
+     * comes back to the feed. Throws when it couldn't comment; throws
+     * AppStuckError when the feed can't be brought back. Apps without it never comment.
+     */
+    comment?(context: AppContext, text: string): Promise<{ verified: boolean; durationMs?: number; steps?: Record<string, number> }>;
 }
 
 export interface StartOptions {
@@ -142,8 +149,8 @@ export interface Observation {
     caption: string;
     isAd: boolean;
     remainingMs: number;
-    /** Likes/saves done so far, and how many the rate allows if this video is liked/saved. */
-    engagement: { likes: number; likesAllowed: number; saves: number; savesAllowed: number };
+    /** Likes/saves/comments done so far, and how many the rate allows if this video gets one. */
+    engagement: { likes: number; likesAllowed: number; saves: number; savesAllowed: number; comments?: number; commentsAllowed?: number };
     /** Set when the session already knows to skip this video without asking the model (e.g. 'ad', 'shop', 'card', 'foreign'). */
     autoSkip?: string;
 }
@@ -159,6 +166,7 @@ export interface SessionSummary {
     skips: number;
     likes: number;
     saves: number;
+    comments: number;
     /** Share of judged videos liked / saved. */
     likeRate: number;
     saveRate: number;
@@ -188,7 +196,8 @@ interface CurrentVideo {
 type WatchOutcome =
     | { by: 'progress'; completed: boolean; lastProgress: number; videoMs?: number }
     | { by: 'advanced'; lastProgress: number }
-    | { by: 'timer' };
+    | { by: 'timer' }
+    | { by: 'commented' };
 
 export function median(values: readonly number[]): number | undefined {
     if (!values.length) return undefined;
@@ -225,6 +234,62 @@ export function resolveDevice(devices: readonly RegisteredDevice[], udid: string
     throw new Error(`Pass udid: ${active.length} active devices are registered: ${list}`);
 }
 
+/**
+ * Unlocks the phone and opens an Appium session on the app. `launch`
+ * relaunches it from cold (a doomscroll); otherwise it attaches to the app
+ * as it is on screen (e.g. to comment on the Reel already showing).
+ */
+export async function connectApp(device: RegisteredDevice, bundleId: string, { launch }: { launch: boolean }): Promise<AppContext> {
+    const coordinates = resolveDeviceCoordinates(coordinateProfile(device), device.coordinates);
+    const wdaUrl = process.env.WDA_URL ?? `http://127.0.0.1:${device.wdaLocalPort ?? Number(process.env.WDA_LOCAL_PORT ?? 8100)}`;
+    const remoteControl = new WdaRemoteControl({
+        deviceUdid: device.udid,
+        wdaUrl,
+        passcode: device.passcode ?? process.env.IOS_PASSCODE,
+        passcodeKeypadLayout: coordinates.passcodeKeypad,
+    });
+    console.log(`[agent] unlocking ${device.udid}`);
+    await remoteControl.unlock(device.udid);
+    const driver = await remote({
+        hostname: process.env.APPIUM_HOST ?? '127.0.0.1',
+        port: Number(process.env.APPIUM_PORT ?? 4725),
+        path: '/',
+        logLevel: 'warn',
+        connectionRetryCount: 0,
+        connectionRetryTimeout: 180000,
+        capabilities: {
+            platformName: 'iOS',
+            'appium:automationName': 'XCUITest',
+            'appium:udid': device.udid,
+            'appium:bundleId': bundleId,
+            'appium:noReset': true,
+            'appium:forceAppLaunch': launch,
+            'appium:shouldTerminateApp': launch,
+            // The model thinks between calls; keep the session alive.
+            'appium:newCommandTimeout': 300,
+            // Feeds autoplay video, so the app never becomes idle.
+            'appium:waitForIdleTimeout': 0,
+            'appium:webDriverAgentUrl': wdaUrl,
+            'appium:wdaRemotePort': device.wdaRemotePort ?? Number(process.env.WDA_REMOTE_PORT ?? 8100),
+        } as WebdriverIO.Capabilities,
+    });
+    try {
+        await driver.updateSettings({ defaultActiveApplication: bundleId });
+        if (launch) await driver.pause(appLaunchSettleMs()); // let a launch ad settle
+        // From WDA, not driver.getWindowRect(): that looks up the app element,
+        // which hangs on TikTok's constantly updating feed.
+        const { scale, screenSize } = await remoteControl.getScreenInfo(device.udid);
+        return {
+            driver, remoteControl, device, coordinates, scale,
+            window: { width: screenSize.width, height: screenSize.height },
+            screenshot: () => remoteControl.getScreenshot(device.udid),
+        };
+    } catch (error) {
+        await driver.deleteSession().catch(() => undefined);
+        throw error;
+    }
+}
+
 export class AgentSession {
     private current: CurrentVideo | undefined;
     private busy = false;
@@ -235,6 +300,9 @@ export class AgentSession {
     private skips = 0;
     private likes = 0;
     private saves = 0;
+    private comments = 0;
+    /** Videos judged when the last comment was left. */
+    private lastCommentAt: number | undefined;
     private ads = 0;
     private cardsInARow = 0;
     /** The app moved to the next video on its own: don't swipe past it. */
@@ -272,53 +340,11 @@ export class AgentSession {
                 : 'Pass a niche, or an account that has one');
         }
 
-        const coordinates = resolveDeviceCoordinates(coordinateProfile(device), device.coordinates);
         const swipeStyle = resolveSwipeStyle(options.swipeStyle, coordinateProfile(device));
-        const wdaUrl = process.env.WDA_URL ?? `http://127.0.0.1:${device.wdaLocalPort ?? Number(process.env.WDA_LOCAL_PORT ?? 8100)}`;
-        const remoteControl = new WdaRemoteControl({
-            deviceUdid: device.udid,
-            wdaUrl,
-            passcode: device.passcode ?? process.env.IOS_PASSCODE,
-            passcodeKeypadLayout: coordinates.passcodeKeypad,
-        });
-        console.log(`[agent] unlocking ${device.udid}`);
-        await remoteControl.unlock(device.udid);
-
         console.log(`[agent] opening ${adapter.label}`);
-        const driver = await remote({
-            hostname: process.env.APPIUM_HOST ?? '127.0.0.1',
-            port: Number(process.env.APPIUM_PORT ?? 4725),
-            path: '/',
-            logLevel: 'warn',
-            connectionRetryCount: 0,
-            connectionRetryTimeout: 180000,
-            capabilities: {
-                platformName: 'iOS',
-                'appium:automationName': 'XCUITest',
-                'appium:udid': device.udid,
-                'appium:bundleId': adapter.bundleId,
-                'appium:noReset': true,
-                'appium:forceAppLaunch': true,
-                'appium:shouldTerminateApp': true,
-                // The model thinks between calls; keep the session alive.
-                'appium:newCommandTimeout': 300,
-                // Feeds autoplay video, so the app never becomes idle.
-                'appium:waitForIdleTimeout': 0,
-                'appium:webDriverAgentUrl': wdaUrl,
-                'appium:wdaRemotePort': device.wdaRemotePort ?? Number(process.env.WDA_REMOTE_PORT ?? 8100),
-            } as WebdriverIO.Capabilities,
-        });
+        const context = await connectApp(device, adapter.bundleId, { launch: true });
+        const { driver } = context;
         try {
-            await driver.updateSettings({ defaultActiveApplication: adapter.bundleId });
-            await driver.pause(appLaunchSettleMs()); // let a launch ad settle
-            // From WDA, not driver.getWindowRect(): that looks up the app element,
-            // which hangs on TikTok's constantly updating feed.
-            const { scale, screenSize } = await remoteControl.getScreenInfo(device.udid);
-            const window = { width: screenSize.width, height: screenSize.height };
-            const context: AppContext = {
-                driver, remoteControl, device, coordinates, scale, window,
-                screenshot: () => remoteControl.getScreenshot(device.udid),
-            };
             await adapter.openFeed?.(context);
 
             const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -336,6 +362,11 @@ export class AgentSession {
             await driver.deleteSession().catch(() => undefined);
             throw error;
         }
+    }
+
+    /** The session has scrolled long enough for a comment. */
+    private commentsWarm(): boolean {
+        return Date.now() - this.startedAt >= commentWarmupMs();
     }
 
     get remainingMs(): number {
@@ -410,6 +441,14 @@ export class AgentSession {
             engagement: {
                 likes: this.likes, likesAllowed: engagementAllowance(judgedIncludingThis, profile.likeChance),
                 saves: this.saves, savesAllowed: this.adapter.canSave ? engagementAllowance(judgedIncludingThis, profile.saveChance) : 0,
+                ...(this.adapter.comment
+                    // The model only sees a comments line while one may be left now.
+                    ? {
+                        comments: this.comments,
+                        commentsAllowed: this.commentsWarm() && commentOpen(judgedIncludingThis, this.comments, this.lastCommentAt, commentChance(this.personality))
+                            ? commentAllowance(judgedIncludingThis, commentChance(this.personality)) : this.comments,
+                    }
+                    : {}),
             },
             ...(autoSkip ? { autoSkip } : {}),
         };
@@ -430,19 +469,27 @@ export class AgentSession {
             this.advancedOnItsOwn = false;
             const decidedAt = Date.now();
             const canSave = this.adapter.canSave;
-            const timed = timePlan(canSave ? plan : { ...plan, save: false }, this.personality, {
-                judged: this.decisionMs.length, likes: this.likes, saves: this.saves,
+            const supported = { ...plan, ...(canSave ? {} : { save: false }), ...(this.adapter.comment && this.commentsWarm() ? {} : { comment: null }) };
+            const timed = timePlan(supported, this.personality, {
+                judged: this.decisionMs.length, likes: this.likes, saves: this.saves, comments: this.comments,
+                ...(this.lastCommentAt !== undefined ? { lastCommentAt: this.lastCommentAt } : {}),
             });
             this.decisionMs.push(decidedAt - video.observedAt);
 
-            const actions: Array<{ at: number; kind: 'like' | 'save' }> = [];
+            const actions: Array<{ at: number; kind: 'like' | 'save' | 'comment' }> = [];
             if (timed.likeAtMs !== undefined) actions.push({ at: timed.likeAtMs, kind: 'like' });
             if (timed.saveAtMs !== undefined) actions.push({ at: timed.saveAtMs, kind: 'save' });
+            if (timed.commentAtMs !== undefined) actions.push({ at: timed.commentAtMs, kind: 'comment' });
             actions.sort((a, b) => a.at - b.at);
             let liked = false;
             let saved = false;
+            let commented: Awaited<ReturnType<AgentSession['leaveComment']>> | undefined;
             for (const action of actions) {
                 await sleep(decidedAt + action.at - Date.now());
+                if (action.kind === 'comment') {
+                    commented = await this.leaveComment(timed.comment!);
+                    continue;
+                }
                 // Located right before the tap: the rail moves, and Reels can move on by themselves.
                 const controls = await this.adapter.locateControls(this.context, video.reelId).catch((error: unknown) => {
                     console.log(`[agent] control detection failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -465,9 +512,13 @@ export class AgentSession {
                     this.saves += 1;
                 }
             }
-            const watched: WatchOutcome = plan.watch === 'full'
-                ? await this.watchToEnd(decidedAt, timed.watchMs, video.reelId)
-                : (await sleep(decidedAt + timed.watchMs - Date.now()), { by: 'timer' });
+            // After a comment the video has been on screen a long while already, and
+            // it may have stopped behind the sheet: a short look, then move on.
+            const watched: WatchOutcome = commented
+                ? (await sleep(1500 + Math.random() * 3500), { by: 'commented' })
+                : plan.watch === 'full'
+                    ? await this.watchToEnd(decidedAt, timed.watchMs, video.reelId)
+                    : (await sleep(decidedAt + timed.watchMs - Date.now()), { by: 'timer' });
 
             const isAd = await video.strictAd;
             if (isAd) this.ads += 1;
@@ -492,7 +543,7 @@ export class AgentSession {
 
             await appendFile(path.join(this.logDirectory, 'decisions.jsonl'), `${JSON.stringify({
                 video: video.index, caption: video.caption, isAd, ...(video.reelId ? { reelId: video.reelId } : {}),
-                plan, timed, watched, liked, ...(canSave ? { saved } : {}),
+                plan, timed, watched, liked, ...(canSave ? { saved } : {}), ...(commented ? { commented } : {}),
                 ...(this.advancedOnItsOwn ? { advancedOnItsOwn: true } : {}),
                 decisionMs: decidedAt - video.observedAt, screenMs: arrivedAt - video.arrivedAt, swipe,
                 ...(video.retrySwipes.length ? { retrySwipes: video.retrySwipes } : {}), ...logExtra,
@@ -504,6 +555,26 @@ export class AgentSession {
             return { observation: await this.observe(arrivedAt, swipe ? video : undefined) };
         } finally {
             this.busy = false;
+        }
+    }
+
+    /**
+     * Comments on the video on screen. A failed comment is logged and the
+     * video goes on; a comment sheet that won't close stops the session.
+     */
+    private async leaveComment(text: string): Promise<{ text: string; verified?: boolean; ms?: number; steps?: Record<string, number>; error?: string }> {
+        try {
+            const { verified, durationMs, steps } = await this.adapter.comment!(this.context, text);
+            this.comments += 1;
+            this.lastCommentAt = this.decisionMs.length;
+            const timing = durationMs !== undefined ? ` in ${(durationMs / 1000).toFixed(1)} s ${JSON.stringify(steps ?? {})}` : '';
+            console.log(`[agent] commented ${JSON.stringify(text)}${verified ? '' : ' (not confirmed)'}${timing}`);
+            return { text, verified, ...(durationMs !== undefined ? { ms: durationMs } : {}), ...(steps ? { steps } : {}) };
+        } catch (error) {
+            if (error instanceof AppStuckError) throw error;
+            const message = error instanceof Error ? error.message : String(error);
+            console.log(`[agent] comment failed: ${message}`);
+            return { text, error: message };
         }
     }
 
@@ -570,6 +641,7 @@ export class AgentSession {
             skips: this.skips,
             likes: this.likes,
             saves: this.saves,
+            comments: this.comments,
             likeRate: rate(this.likes),
             saveRate: rate(this.saves),
             ads: this.ads,

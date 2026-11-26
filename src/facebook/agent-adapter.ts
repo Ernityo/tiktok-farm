@@ -1,11 +1,14 @@
 // Facebook Reels for the agentic doomscroll (src/agent/session.ts).
 // Everything is read from screenshots, like the programmatic Reels
 // doomscroll: the like/comment/share column, "Afficher l'original" on
-// translated captions, and the progress bar.
+// translated captions, and the progress bar. Comments go through the
+// comment sheet (src/facebook/comment.ts).
 
 import type { AgentAppAdapter, AppContext } from '../agent/session.js';
 import { FACEBOOK_PLUGIN_ID } from '../facebook-plugin.js';
 import { swipeCoordinates, tapCoordinate } from '../tiktok/actions.js';
+import { leaveComment } from '../agent/comment-flow.js';
+import { FACEBOOK_COMMENT_SHEET } from './comment.js';
 import { detectReelsControls, detectTranslatedCaption } from './reels-controls.js';
 import { readReelProgress } from './reels-progress.js';
 
@@ -64,6 +67,10 @@ export const facebookAdapter: AgentAppAdapter = {
     async readProgress(context) {
         const progress = await readReelProgress(await context.screenshot(), context.scale);
         return progress === undefined ? {} : { progress };
+    },
+
+    async comment(context, text) {
+        return leaveComment(context, FACEBOOK_COMMENT_SHEET, text);
     },
 
     async fixedSwipe(context) {

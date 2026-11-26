@@ -7,6 +7,7 @@
 //
 // Facebook/Instagram: --account only picks the niche (that app's niche for the
 // handle, else its TikTok niche); or pass --niche. They like but never save.
+// Facebook and Instagram also comment, rarely (AGENT_COMMENT_CHANCE raises the rate).
 //
 // --language is the language videos must be in (the phone's language: TikTok
 // shows a translation link on anything else); other videos are skipped.
@@ -64,7 +65,7 @@ async function decide(decider: OpenRouterDecider, observation: Observation): Pro
 }
 
 function describe(plan: AgentPlan): string {
-    return `${plan.watch.padEnd(5)} ${plan.onNiche.toFixed(2)}${plan.likeAtMs ? ' like' : ''}${plan.save ? ' save' : ''}`;
+    return `${plan.watch.padEnd(5)} ${plan.onNiche.toFixed(2)}${plan.likeAtMs ? ' like' : ''}${plan.save ? ' save' : ''}${plan.comment ? ` comment ${JSON.stringify(plan.comment)}` : ''}`;
 }
 
 const startOptions = {

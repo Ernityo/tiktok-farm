@@ -16,9 +16,11 @@ export interface Niche {
     keywords: string[];
     /** Topics to treat as off-niche even if they look close. */
     avoid: string[];
+    /** Who the account is, for the voice of its comments (e.g. "30-year-old French woman, barista, watches AI stories to unwind"). */
+    persona?: string;
 }
 
-export const NICHE_LIMITS = { description: 1000, listItems: 50, item: 80 } as const;
+export const NICHE_LIMITS = { description: 1000, listItems: 50, item: 80, persona: 500 } as const;
 
 export function normalizeHandle(handle: string): string {
     const trimmed = handle.trim();
@@ -49,7 +51,12 @@ export function parseNiche(value: JsonValue | undefined): Niche {
     if (description.length > NICHE_LIMITS.description) {
         throw new Error(`Niche description must be ${NICHE_LIMITS.description} characters or fewer`);
     }
-    return { description, keywords: stringList(value.keywords, 'keywords'), avoid: stringList(value.avoid, 'avoid') };
+    const persona = typeof value.persona === 'string' ? value.persona.trim() : '';
+    if (persona.length > NICHE_LIMITS.persona) throw new Error(`Persona must be ${NICHE_LIMITS.persona} characters or fewer`);
+    return {
+        description, keywords: stringList(value.keywords, 'keywords'), avoid: stringList(value.avoid, 'avoid'),
+        ...(persona ? { persona } : {}),
+    };
 }
 
 function storedNiches(device: RegisteredDevice | undefined, pluginId: string): JsonObject {

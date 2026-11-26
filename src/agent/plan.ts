@@ -3,6 +3,7 @@
 // it can be unit-tested.
 
 import { PROFILES, type Personality } from '../tiktok/doomscroll-profile.js';
+import { COMMENT_KEEP_CHANCE, commentChance, commentOpen, sanitizeComment } from './comment.js';
 
 export type WatchChoice = 'skip' | 'short' | 'full';
 
@@ -13,6 +14,8 @@ export interface AgentPlan {
     /** When to like, in ms from now. Undefined/null = don't like. */
     likeAtMs?: number | null;
     save?: boolean;
+    /** Text to leave as a comment (apps that support it). Undefined/null = no comment. */
+    comment?: string | null;
 }
 
 export interface TimedPlan {
@@ -22,6 +25,10 @@ export interface TimedPlan {
     likeAtMs?: number;
     /** Undefined = no save. Always <= watchMs and after likeAtMs. */
     saveAtMs?: number;
+    /** Undefined = no comment. After the like; the watch stretches past it. */
+    commentAtMs?: number;
+    /** The comment as it will be typed (sanitized). Set with commentAtMs. */
+    comment?: string;
 }
 
 /**
@@ -47,11 +54,14 @@ export const FULL_WATCH_CAP_MS: Record<Personality, number> = {
     engaged: 120_000,
 };
 
-/** Likes/saves done and videos judged so far in the session. */
+/** Likes/saves/comments done and videos judged so far in the session. */
 export interface EngagementSoFar {
     judged: number;
     likes: number;
     saves: number;
+    comments?: number;
+    /** Videos judged when the last comment was left. */
+    lastCommentAt?: number;
 }
 
 /**
@@ -86,7 +96,7 @@ function jitter(value: number, random: () => number): number {
 }
 
 /**
- * Turns a plan into timings. Skipped videos are never liked or saved. The
+ * Turns a plan into timings. Skipped videos are never liked, saved or commented. The
  * session deadline doesn't shorten a video: it only decides whether another
  * one starts, so the last video plays out like any other.
  */
@@ -115,13 +125,21 @@ export function timePlan(
         const after = (likeAtMs ?? 0) + MIN_ACTION_GAP_MS;
         saveAtMs = Math.max(after, between(Math.round(watchMs * 0.4), Math.round(watchMs * 0.8), random));
     }
+    let commentAtMs: number | undefined;
+    const comment = sanitizeComment(plan.comment);
+    if (comment && plan.watch === 'full' && random() < COMMENT_KEEP_CHANCE
+        && commentOpen(judged, soFar.comments ?? 0, soFar.lastCommentAt, commentChance(personality))) {
+        // People comment once they've watched a bit (and liked, if they did).
+        commentAtMs = Math.max((likeAtMs ?? 0) + MIN_ACTION_GAP_MS, between(3000, 9000, random));
+    }
     // A planned action must fit before the swipe: stretch the watch for it.
-    const lastAction = Math.max(likeAtMs ?? -Infinity, saveAtMs ?? -Infinity);
+    const lastAction = Math.max(likeAtMs ?? -Infinity, saveAtMs ?? -Infinity, commentAtMs ?? -Infinity);
     if (Number.isFinite(lastAction)) watchMs = Math.max(watchMs, lastAction + MIN_ACTION_GAP_MS);
     return {
         watchMs,
         ...(likeAtMs !== undefined ? { likeAtMs } : {}),
         ...(saveAtMs !== undefined ? { saveAtMs } : {}),
+        ...(commentAtMs !== undefined && comment ? { commentAtMs, comment } : {}),
     };
 }
 

@@ -19,10 +19,11 @@ export const AGENT_APPS = ['tiktok', 'facebook', 'instagram'] as const;
 export type AgentApp = (typeof AGENT_APPS)[number];
 
 /** Per-app wording of the prompt. Only TikTok can save from the feed. */
-const APP_PROMPTS: Record<AgentApp, { feed: string; canSave: boolean; foreign: (language: string) => string[]; skip: string }> = {
+const APP_PROMPTS: Record<AgentApp, { feed: string; canSave: boolean; canComment: boolean; foreign: (language: string) => string[]; skip: string }> = {
     tiktok: {
         feed: 'TikTok feed',
         canSave: true,
+        canComment: false,
         foreign: (language) => [
             `- foreign: true when the video is not in ${language}. A translation link under the caption ("Voir l'original",`,
             `  "Voir la traduction", "See original", "See translation") always means foreign. Foreign videos are skipped.`,
@@ -32,6 +33,7 @@ const APP_PROMPTS: Record<AgentApp, { feed: string; canSave: boolean; foreign: (
     facebook: {
         feed: 'Facebook Reels feed',
         canSave: false,
+        canComment: true,
         foreign: (language) => [
             `- foreign: true when the video is not in ${language}. A translation link under the caption ("Afficher l'original",`,
             `  "Voir la traduction", "See original", "See translation") always means foreign. Foreign videos are skipped.`,
@@ -41,6 +43,7 @@ const APP_PROMPTS: Record<AgentApp, { feed: string; canSave: boolean; foreign: (
     instagram: {
         feed: 'Instagram Reels feed',
         canSave: false,
+        canComment: true,
         foreign: (language) => [
             `- foreign: true when the video is not in ${language}. A translation link under the caption ("Voir la traduction",`,
             `  "See translation") always means foreign. Foreign videos are skipped.`,
@@ -49,14 +52,30 @@ const APP_PROMPTS: Record<AgentApp, { feed: string; canSave: boolean; foreign: (
     },
 };
 
+/** How the account comments: who it is and how it texts. */
+export function commentRules(niche: Niche, language: string): string[] {
+    return [
+        '- comment: null almost always. Only on a "full" video, and only when the video shows comments done vs allowed with',
+        '  some left (no comments line: null). Then write one comment as this person:',
+        `  ${niche.persona ?? 'a regular person scrolling on their phone'}.`,
+        `  Write it the way she would text a friend in ${language}: all lowercase, no punctuation at all, no emojis, 2 to 10 words,`,
+        '  casual and real, texting shortcuts are fine sometimes. React to something specific happening in this video.',
+        '  Not polite, not enthusiastic-marketing, no "merci pour le partage", nothing generic ("super video", "trop bien"),',
+        '  no questions to the creator, no hashtags, no mentions, no links.',
+    ];
+}
+
 export function systemPrompt(niche: Niche, personality: Personality, language = 'French', app: AgentApp = 'tiktok'): string {
     const wording = APP_PROMPTS[app];
+    const fields = [
+        '"foreign": true|false, "on_niche": 0..1, "watch": "skip"|"short"|"full", "like": true|false',
+        ...(wording.canSave ? ['"save": true|false'] : []),
+        ...(wording.canComment ? ['"comment": "text"|null'] : []),
+    ];
     return [
         `You scroll a ${wording.feed} for one account (a ${personality} viewer), teaching its algorithm a niche.`,
         'For each video you get a screenshot, a full-resolution crop of its caption area, and noisy OCR caption text. Reply with JSON only:',
-        wording.canSave
-            ? '{"foreign": true|false, "on_niche": 0..1, "watch": "skip"|"short"|"full", "like": true|false, "save": true|false}'
-            : '{"foreign": true|false, "on_niche": 0..1, "watch": "skip"|"short"|"full", "like": true|false}',
+        `{${fields.join(', ')}}`,
         ...wording.foreign(language),
         wording.skip,
         '- short: unsure or loosely related.',
@@ -70,6 +89,7 @@ export function systemPrompt(niche: Niche, personality: Personality, language = 
                 '- like: only on "full" videos. Each video shows likes done vs allowed: when below the allowance, like a',
                 '  clearly on-niche video; at the allowance, do not like.',
             ]),
+        ...(wording.canComment ? commentRules(niche, language) : []),
         'The image wins when it disagrees with the OCR text. Anything matching "avoid" is a skip.',
         `niche: ${niche.description}`,
         niche.keywords.length ? `keywords: ${niche.keywords.join(', ')}` : '',
@@ -84,9 +104,12 @@ export function userText(observation: DecisionInput): string {
     const e = observation.engagement;
     return [
         `video ${observation.video}${observation.isAd ? ' · AD' : ''}`,
-        e.savesAllowed > 0
-            ? `likes ${e.likes}/${e.likesAllowed} allowed · saves ${e.saves}/${e.savesAllowed} allowed`
-            : `likes ${e.likes}/${e.likesAllowed} allowed`,
+        [
+            `likes ${e.likes}/${e.likesAllowed} allowed`,
+            ...(e.savesAllowed > 0 ? [`saves ${e.saves}/${e.savesAllowed} allowed`] : []),
+            // Only shown while one is left, so the model isn't tempted otherwise.
+            ...((e.commentsAllowed ?? 0) > (e.comments ?? 0) ? [`comments ${e.comments ?? 0}/${e.commentsAllowed} allowed`] : []),
+        ].join(' · '),
         observation.caption ? `caption (OCR, noisy): ${observation.caption}` : 'caption: (none read)',
     ].join('\n');
 }
@@ -97,6 +120,7 @@ const Reply = z.object({
     watch: z.enum(['skip', 'short', 'full']),
     like: z.boolean().optional().catch(false),
     save: z.boolean().optional().catch(false),
+    comment: z.string().nullable().optional().catch(null),
 });
 
 /**
@@ -115,6 +139,7 @@ export function parseReply(text: string, random: () => number = Math.random): { 
             watch: reply.watch,
             likeAtMs: engaged && reply.like ? Math.round(2000 + random() * 10_000) : null,
             save: engaged && reply.save === true,
+            ...(engaged && reply.comment ? { comment: reply.comment } : {}),
         },
         foreign,
     };
@@ -143,7 +168,8 @@ export class OpenRouterDecider {
             headers: { Authorization: `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 model: this.model,
-                max_tokens: 100,
+                // Room for a short comment on top of the plan.
+                max_tokens: 160,
                 temperature: 0.2,
                 reasoning: { enabled: false },
                 // Route to the provider currently answering fastest.

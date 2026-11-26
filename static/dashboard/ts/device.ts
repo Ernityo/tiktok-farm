@@ -143,6 +143,7 @@ const elements = {
     nicheDescription: element<HTMLTextAreaElement>('#niche-description'),
     nicheKeywords: element<HTMLInputElement>('#niche-keywords'),
     nicheAvoid: element<HTMLInputElement>('#niche-avoid'),
+    nichePersona: element<HTMLTextAreaElement>('#niche-persona'),
     nicheClear: element<HTMLButtonElement>('#niche-clear'),
     nichesResult: element<HTMLElement>('#niches-result'),
     passcodeDialog: element<HTMLDialogElement>('#passcode-dialog'),
@@ -915,7 +916,7 @@ elements.accountsForm.addEventListener('submit', async (event) => {
     }
 });
 
-interface Niche { description: string; keywords: string[]; avoid: string[] }
+interface Niche { description: string; keywords: string[]; avoid: string[]; persona?: string }
 
 function readNiches(): Record<string, Niche> {
     try {
@@ -934,6 +935,7 @@ function showNiche(): void {
     elements.nicheDescription.value = niche?.description ?? '';
     elements.nicheKeywords.value = niche?.keywords.join(', ') ?? '';
     elements.nicheAvoid.value = niche?.avoid.join(', ') ?? '';
+    elements.nichePersona.value = niche?.persona ?? '';
     elements.nichesResult.textContent = '';
 }
 
@@ -943,7 +945,7 @@ function renderNicheAccounts(): void {
         new Option(niches[account] ? account : `${account} (no niche)`, account)));
     if (nicheAccounts.includes(previous)) elements.nicheAccount.value = previous;
     const disabled = nicheAccounts.length === 0;
-    for (const control of [elements.nicheAccount, elements.nicheDescription, elements.nicheKeywords, elements.nicheAvoid, elements.nicheClear]) {
+    for (const control of [elements.nicheAccount, elements.nicheDescription, elements.nicheKeywords, elements.nicheAvoid, elements.nichePersona, elements.nicheClear]) {
         control.disabled = disabled;
     }
     showNiche();
@@ -978,6 +980,7 @@ elements.nichesForm.addEventListener('submit', (event) => {
         description: elements.nicheDescription.value.trim(),
         keywords: commaList(elements.nicheKeywords.value),
         avoid: commaList(elements.nicheAvoid.value),
+        ...(elements.nichePersona.value.trim() ? { persona: elements.nichePersona.value.trim() } : {}),
     });
 });
 elements.nicheClear.addEventListener('click', () => void saveNiche(null));
