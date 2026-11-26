@@ -33,7 +33,10 @@ export function systemPrompt(niche: Niche, personality: Personality, language = 
     ].filter(Boolean).join('\n');
 }
 
-export function userText(observation: Observation): string {
+/** What the model sees for one video. The caption crop is missing from runs recorded before it existed. */
+export type DecisionInput = Pick<Observation, 'video' | 'image' | 'caption' | 'isAd' | 'engagement'> & { captionImage?: Buffer };
+
+export function userText(observation: DecisionInput): string {
     const e = observation.engagement;
     return [
         `video ${observation.video}${observation.isAd ? ' · AD' : ''}`,
@@ -86,7 +89,7 @@ export class OpenRouterDecider {
         private readonly system: string,
     ) {}
 
-    async decide(observation: Observation): Promise<ModelDecision> {
+    async decide(observation: DecisionInput): Promise<ModelDecision> {
         const started = performance.now();
         const response = await fetch(ENDPOINT, {
             method: 'POST',
@@ -106,7 +109,9 @@ export class OpenRouterDecider {
                         role: 'user',
                         content: [
                             { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${observation.image.toString('base64')}` } },
-                            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${observation.captionImage.toString('base64')}` } },
+                            ...(observation.captionImage
+                                ? [{ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${observation.captionImage.toString('base64')}` } }]
+                                : []),
                             { type: 'text', text: userText(observation) },
                         ],
                     },

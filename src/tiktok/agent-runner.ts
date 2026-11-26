@@ -12,7 +12,7 @@
 import { parseArgs } from 'node:util';
 
 import { DEFAULT_AGENT_MODEL, OpenRouterDecider, systemPrompt, type ModelDecision } from './agent-model.js';
-import { SHOP_POST, type AgentPlan } from './agent-plan.js';
+import { autoSkipReason, type AgentPlan } from './agent-plan.js';
 import { TikTokAgentSession, type Observation, type SessionSummary } from './agent-session.js';
 import type { Personality } from './doomscroll-profile.js';
 
@@ -38,13 +38,6 @@ if (!PERSONALITIES.includes(personality)) throw new Error(`--personality must be
 const apiKey = process.env.OPENROUTER_API_KEY;
 if (!apiKey) throw new Error('Set OPENROUTER_API_KEY in .env');
 const model = process.env.AGENT_MODEL || DEFAULT_AGENT_MODEL;
-
-/** Ads and shop posts never need the model. */
-function autoSkip(observation: Observation): string | undefined {
-    if (observation.isAd) return 'ad';
-    if (SHOP_POST.test(observation.caption)) return 'shop';
-    return undefined;
-}
 
 async function decide(decider: OpenRouterDecider, observation: Observation): Promise<ModelDecision> {
     try {
@@ -84,7 +77,7 @@ try {
             summary = await session.stop('stopped');
             break;
         }
-        const skipReason = autoSkip(observation);
+        const skipReason = autoSkipReason(observation);
         let plan: AgentPlan;
         let extra: Record<string, unknown>;
         if (skipReason) {

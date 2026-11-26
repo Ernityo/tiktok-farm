@@ -132,6 +132,13 @@ export function timePlan(
 /** TikTok Shop posts: a product card sits where the normal swipe starts, and they are never on-niche. */
 export const SHOP_POST = /commission\s*pay|paid\s*commission|tiktok\s*shop/i;
 
+/** Why a video is skipped in code without asking the model, if it is. */
+export function autoSkipReason(video: { isAd: boolean; caption: string }): 'ad' | 'shop' | undefined {
+    if (video.isAd) return 'ad';
+    if (SHOP_POST.test(video.caption)) return 'shop';
+    return undefined;
+}
+
 function captionTokens(caption: string): Set<string> {
     return new Set(caption.toLowerCase().normalize('NFD').replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((token) => token.length >= 3));
 }
