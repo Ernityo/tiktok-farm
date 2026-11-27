@@ -15,8 +15,8 @@ import { adFromWords, readCaptionWords } from '../tiktok/ad-detection.js';
 import { AppStuckError, commentAllowance, commentChance, commentOpen, commentWarmupMs } from './comment.js';
 import type { AgentApp, ScrollGoal } from './model.js';
 import {
-    autoSkipReason, engagementAllowance, finalLingerMs, FULL_WATCH_CAP_MS, MIN_ACTION_GAP_MS, sameCaption, sessionLengthMs, SHOP_POST, swipeRecord, timePlan,
-    type AgentPlan, type SwipeRecord,
+    autoSkipReason, engagementAllowance, finalLingerMs, FULL_WATCH_CAP_MS, MIN_ACTION_GAP_MS, reactionPoints, sameCaption, sessionLengthMs, SHOP_POST, swipeRecord, timePlan,
+    type AgentPlan, type ProgressReaction, type SwipeRecord,
 } from './plan.js';
 import { PROFILES, type Personality } from '../tiktok/doomscroll-profile.js';
 import { nicheForAccount, normalizeHandle, type Niche } from '../tiktok/niche.js';
@@ -72,6 +72,12 @@ const FRAME_TIMEOUT_MS = 2000;
  * both (src/agent/frame-compare.ts). Slows each video by the extra grab.
  */
 const FRAME_COMPARE = process.env.AGENT_FRAME_COMPARE === '1' && FRAME_SOURCE === 'mjpeg';
+/**
+ * A like or save on a `full` watch never lands sooner than this after the
+ * decision, even when the bar is already past its point (a long decision on a
+ * short video): a person takes a moment to react.
+ */
+const REACTION_MIN_DELAY_MS = 1500;
 const CAPTION_MAX_CHARS = 400;
 const CAPTION_CROP_WIDTH = 640;
 /** Extra swipes when the feed did not move on (same video as before). */
@@ -816,50 +822,59 @@ export class AgentSession {
             let liked = false;
             let saved = false;
             let commented: Awaited<ReturnType<AgentSession['leaveComment']>> | undefined;
-            // Timings count from the video appearing, so the thinking time is part of
-            // the watch. Actions already due run now, but never back to back.
             const shownAt = video.arrivedAt;
             let lastActionAt = -Infinity;
-            for (const action of actions) {
-                await sleep(Math.max(shownAt + action.at, lastActionAt + MIN_ACTION_GAP_MS) - Date.now());
+            const perform = async (kind: 'like' | 'save' | 'comment'): Promise<void> => {
                 const actionStart = Date.now();
-                if (action.kind === 'comment') {
-                    commented = await this.leaveComment(timed.comment!);
-                    lastActionAt = Date.now();
-                    actionSpans.push({ kind: 'comment', at: [actionStart, lastActionAt] });
-                    continue;
-                }
-                // Located right before the tap: the rail moves, and Reels can move on by themselves.
-                const controls = await this.adapter.locateControls(this.context, video.reelId).catch((error: unknown) => {
-                    console.log(`[agent] control detection failed: ${error instanceof Error ? error.message : String(error)}`);
-                    return undefined;
-                });
-                const radius = this.adapter.tapRadius !== undefined ? { radius: this.adapter.tapRadius } : {};
-                // Heart and bookmark are toggles: never undo an existing like/save.
-                if (action.kind === 'like') {
-                    if (!controls?.like) console.log('[agent] like skipped: button not found confidently (or the video changed)');
-                    else if (!controls.like.liked) {
-                        await tapCoordinate(this.context.driver, controls.like.x, controls.like.y, 'Like', radius);
-                        liked = true;
-                        this.likes += 1;
-                    }
-                } else if (!controls?.save) {
-                    console.log('[agent] save skipped: button not found confidently');
-                } else if (!controls.save.saved) {
-                    await tapCoordinate(this.context.driver, controls.save.x, controls.save.y, 'Save', radius);
-                    saved = true;
-                    this.saves += 1;
+                if (kind === 'comment') commented = await this.leaveComment(timed.comment!);
+                else if (await this.tapReaction(kind, video.reelId)) {
+                    if (kind === 'like') liked = true;
+                    else saved = true;
                 }
                 lastActionAt = Date.now();
-                actionSpans.push({ kind: action.kind, at: [actionStart, lastActionAt] });
+                actionSpans.push({ kind, at: [actionStart, lastActionAt] });
+            };
+            // Timed actions: like, save and comment count from the decision, as a
+            // person reacts after making up their mind (counted from the appearance,
+            // a fast decision would put likes ~1.5 s into a video). Never back to back.
+            const runTimed = async (list: typeof actions): Promise<void> => {
+                for (const action of list) {
+                    await sleep(Math.max(decidedAt + action.at, lastActionAt + MIN_ACTION_GAP_MS) - Date.now());
+                    await perform(action.kind);
+                }
+            };
+            // A `full` watch without a comment likes and saves at a point in the
+            // video, read off the progress bar while watching, so they land while it
+            // plays however long it is. A comment keeps the timed path: its sheet
+            // covers the video. The watch itself counts from the video appearing.
+            const byProgress = plan.watch === 'full' && timed.commentAtMs === undefined;
+            const points = byProgress ? reactionPoints(timed) : [];
+            if (!byProgress) await runTimed(actions);
+            let watched: WatchOutcome;
+            if (commented) {
+                // The video has been on screen a long while already, and it may have
+                // stopped behind the sheet: a short look, then move on.
+                await sleep(1500 + Math.random() * 3500);
+                watched = { by: 'commented' };
+            } else if (byProgress) {
+                const outcome = await this.watchToEnd(shownAt, video.reelId, {
+                    points,
+                    notBefore: decidedAt + REACTION_MIN_DELAY_MS,
+                    readyAt: () => lastActionAt + MIN_ACTION_GAP_MS,
+                    perform,
+                });
+                if (outcome.by === 'no-bar') {
+                    // No bar to read: the timed like/save, then the timed watch.
+                    await runTimed(actions);
+                    await sleep(Math.max(shownAt + timed.watchMs, lastActionAt + MIN_ACTION_GAP_MS) - Date.now());
+                    watched = { by: 'timer' };
+                } else {
+                    watched = outcome;
+                }
+            } else {
+                await sleep(Math.max(shownAt + timed.watchMs, lastActionAt + MIN_ACTION_GAP_MS) - Date.now());
+                watched = { by: 'timer' };
             }
-            // After a comment the video has been on screen a long while already, and
-            // it may have stopped behind the sheet: a short look, then move on.
-            const watched: WatchOutcome = commented
-                ? (await sleep(1500 + Math.random() * 3500), { by: 'commented' })
-                : plan.watch === 'full'
-                    ? await this.watchToEnd(shownAt, timed.watchMs, video.reelId)
-                    : (await sleep(Math.max(shownAt + timed.watchMs, lastActionAt + MIN_ACTION_GAP_MS) - Date.now()), { by: 'timer' });
             const watchedAt = Date.now();
 
             const isAd = await video.strictAd;
@@ -933,7 +948,7 @@ export class AgentSession {
 
             await appendFile(path.join(this.logDirectory, 'decisions.jsonl'), `${JSON.stringify({
                 video: video.index, caption: video.caption, isAd, ...(video.reelId ? { reelId: video.reelId } : {}),
-                place: video.place, plan, timed, watched, liked, ...(canSave ? { saved } : {}), ...(commented ? { commented } : {}),
+                place: video.place, plan, timed, ...(points.length ? { reactionPoints: points } : {}), watched, liked, ...(canSave ? { saved } : {}), ...(commented ? { commented } : {}),
                 ...(followed ? { followed } : {}), ...(detour ? { search: detour } : {}),
                 ...(this.advancedOnItsOwn ? { advancedOnItsOwn: true } : {}),
                 decisionMs: decidedAt - video.observedAt, screenMs: arrivedAt - video.arrivedAt, swipe,
@@ -1038,42 +1053,101 @@ export class AgentSession {
 
     /**
      * Keeps a `full` video on screen until it has played to the end (the
-     * progress bar loops back to the start), the app moves on, or the cap.
-     * Videos without a bar fall back to the timed watch. The cap and that timer
-     * count from `shownAt`, when the video appeared.
+     * progress bar loops back to the start), the app moves on, or the cap
+     * (counted from `shownAt`, when the video appeared). Likes and saves in
+     * `reactions` are done as the bar passes their point; any still pending
+     * when the video ends are done in the moment before the swipe. Returns
+     * `no-bar` (nothing done) when the video has no bar to read.
      */
-    private async watchToEnd(shownAt: number, timedWatchMs: number, reelId: string | undefined): Promise<WatchOutcome> {
+    private async watchToEnd(
+        shownAt: number,
+        reelId: string | undefined,
+        reactions: {
+            points: ProgressReaction[];
+            /** No reaction before this (Date.now() time), however far the video is. */
+            notBefore: number;
+            /** When the next action may start (the gap after the last one). */
+            readyAt: () => number;
+            perform: (kind: 'like' | 'save') => Promise<void>;
+        },
+    ): Promise<WatchOutcome | { by: 'no-bar' }> {
         const capEnd = shownAt + FULL_WATCH_CAP_MS[this.personality];
         const tracker = new ReelWatchTracker();
+        const pending = [...reactions.points].sort((a, b) => a.atProgress - b.atProgress);
         let lastProgress: number | undefined;
         let misses = 0;
+        /** The rest of the reactions, a gap apart: the video is ending. */
+        const finishReactions = async () => {
+            for (const point of pending.splice(0)) {
+                await sleep(reactions.readyAt() - Date.now());
+                await reactions.perform(point.kind);
+            }
+        };
         while (Date.now() < capEnd) {
             const reading = await this.adapter.readProgress(this.context).catch(() => ({} as { progress?: number; reelId?: string }));
             if (reelId && reading.reelId && reading.reelId !== reelId) {
                 this.advancedOnItsOwn = true;
+                if (pending.length) console.log(`[agent] ${pending.map((point) => point.kind).join(' and ')} skipped: the video moved on by itself`);
                 return { by: 'advanced', lastProgress: lastProgress ?? 0 };
             }
             if (reading.progress === undefined) {
                 misses += 1;
                 // Two misses before any reading: this video has no bar.
-                if (lastProgress === undefined && misses >= 2) break;
+                if (lastProgress === undefined && misses >= 2) return { by: 'no-bar' };
             } else {
                 lastProgress = reading.progress;
                 const state = tracker.add({ atMs: Date.now(), progress: reading.progress });
                 if (state.kind === 'completed' || reading.progress >= 0.98) {
+                    await finishReactions();
                     // Swipe a moment after the loop starts, like a person would.
                     await sleep(Math.min(300 + Math.random() * 1200, capEnd - Date.now()));
                     const videoMs = state.kind === 'completed' ? state.durationMs : undefined;
                     return { by: 'progress', completed: true, lastProgress: reading.progress, ...(videoMs ? { videoMs } : {}) };
                 }
+                const next = pending[0];
+                const now = Date.now();
+                if (next && reading.progress >= next.atProgress && now >= reactions.notBefore && now >= reactions.readyAt()) {
+                    pending.shift();
+                    await reactions.perform(next.kind);
+                    continue; // read the bar again right away: the tap took a while
+                }
             }
             await sleep(Math.min(900, capEnd - Date.now()));
         }
-        if (lastProgress === undefined) {
-            await sleep(shownAt + timedWatchMs - Date.now());
-            return { by: 'timer' };
-        }
+        if (lastProgress === undefined) return { by: 'no-bar' };
+        await finishReactions();
         return { by: 'progress', completed: false, lastProgress };
+    }
+
+    /**
+     * Taps like or save on the current video, located right before the tap
+     * (the rail moves, and Reels can move on by themselves). Heart and bookmark
+     * are toggles: one already on is left alone. True when it tapped.
+     */
+    private async tapReaction(kind: 'like' | 'save', reelId: string | undefined): Promise<boolean> {
+        const controls = await this.adapter.locateControls(this.context, reelId).catch((error: unknown) => {
+            console.log(`[agent] control detection failed: ${error instanceof Error ? error.message : String(error)}`);
+            return undefined;
+        });
+        const radius = this.adapter.tapRadius !== undefined ? { radius: this.adapter.tapRadius } : {};
+        if (kind === 'like') {
+            if (!controls?.like) {
+                console.log('[agent] like skipped: button not found confidently (or the video changed)');
+                return false;
+            }
+            if (controls.like.liked) return false;
+            await tapCoordinate(this.context.driver, controls.like.x, controls.like.y, 'Like', radius);
+            this.likes += 1;
+            return true;
+        }
+        if (!controls?.save) {
+            console.log('[agent] save skipped: button not found confidently');
+            return false;
+        }
+        if (controls.save.saved) return false;
+        await tapCoordinate(this.context.driver, controls.save.x, controls.save.y, 'Save', radius);
+        this.saves += 1;
+        return true;
     }
 
     /** `careful`: an ad, shop post or retry, where the app's ad swipe (if any) starts above the buttons. */

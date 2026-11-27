@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { engagementAllowance, finalLingerMs, sameCaption, sessionLengthMs, swipeRecord, timePlan, WATCH_RANGES, withinBudget } from '../src/agent/plan.js';
+import { engagementAllowance, finalLingerMs, LIKE_PROGRESS, reactionPoints, sameCaption, SAVE_PROGRESS, sessionLengthMs, swipeRecord, timePlan, WATCH_RANGES, withinBudget } from '../src/agent/plan.js';
 import { feedDidNotMove } from '../src/agent/session.js';
 import { parseReply, systemPrompt, userText } from '../src/agent/model.js';
 import { accountNiches, nicheForAccount, parseNiche, pruneNiches } from '../src/tiktok/niche.js';
@@ -203,4 +203,20 @@ test('feedDidNotMove compares captions; a different id means the feed moved', ()
     assert.equal(feedDidNotMove({ caption, reelId: 'Reel de a.' }, { caption, reelId: 'Reel de a.' }), true);
     // Too little text to tell (cards): moved on.
     assert.equal(feedDidNotMove({ caption: 'Suivre' }, { caption: 'Suivre' }), false);
+});
+
+test('full-watch likes and saves land at a point in the video, the save after the like', () => {
+    for (const r of [0, 0.25, 0.5, 0.75, 0.99]) {
+        const points = reactionPoints({ likeAtMs: 4000, saveAtMs: 6000 }, () => r);
+        assert.deepEqual(points.map((point) => point.kind), ['like', 'save']);
+        const [like, save] = points;
+        assert.ok(like!.atProgress >= LIKE_PROGRESS[0] && like!.atProgress <= LIKE_PROGRESS[1]);
+        assert.ok(save!.atProgress > like!.atProgress && save!.atProgress <= 0.95);
+    }
+});
+
+test('reaction points only cover the actions timePlan kept', () => {
+    assert.deepEqual(reactionPoints({}), []);
+    const [save] = reactionPoints({ saveAtMs: 5000 }, () => 0);
+    assert.deepEqual(save, { kind: 'save', atProgress: SAVE_PROGRESS[0] });
 });

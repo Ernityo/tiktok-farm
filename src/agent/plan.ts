@@ -21,14 +21,16 @@ export interface AgentPlan {
 }
 
 /**
- * All times are from the moment the video appeared on screen (the swipe
- * landing), not from the decision: capture and the model's thinking time
- * already count as watching, so a slow model doesn't stretch every video.
+ * `watchMs` counts from the moment the video appeared on screen (the swipe
+ * landing): capture and the model's thinking time already count as watching,
+ * so a slow model doesn't stretch every video. The action times (like, save,
+ * comment) count from the decision, like a person reacting once they've made
+ * up their mind; the session stretches the watch when one lands past it.
  */
 export interface TimedPlan {
     /** How long the video stays on screen in total before swiping. */
     watchMs: number;
-    /** Undefined = no like. Always <= watchMs. */
+    /** Undefined = no like. Always <= watchMs (both counted from 0, see above). */
     likeAtMs?: number;
     /** Undefined = no save. Always <= watchMs and after likeAtMs. */
     saveAtMs?: number;
@@ -150,6 +152,40 @@ export function timePlan(
         ...(saveAtMs !== undefined ? { saveAtMs } : {}),
         ...(commentAtMs !== undefined && comment ? { commentAtMs, comment } : {}),
     };
+}
+
+/** A like or save tied to how far a `full` video has played (0-1 of its progress bar). */
+export interface ProgressReaction {
+    kind: 'like' | 'save';
+    atProgress: number;
+}
+
+/** Where in a video likes land, as a share of its length. */
+export const LIKE_PROGRESS: [number, number] = [0.3, 0.75];
+/** Saves land here, and at least this far after the like. */
+export const SAVE_PROGRESS: [number, number] = [0.5, 0.85];
+const SAVE_AFTER_LIKE = 0.15;
+const LAST_REACTION_PROGRESS = 0.95;
+
+/**
+ * For a `full` watch on a video with a progress bar: like and save at a point
+ * in the video rather than a number of seconds, so they land while it plays
+ * however long it is (not after the end of a short one). Only which actions
+ * survived `timePlan` is used, not its times.
+ */
+export function reactionPoints(timed: Pick<TimedPlan, 'likeAtMs' | 'saveAtMs'>, random: () => number = Math.random): ProgressReaction[] {
+    const points: ProgressReaction[] = [];
+    const share = ([lo, hi]: [number, number]) => lo + random() * (hi - lo);
+    let likeAt: number | undefined;
+    if (timed.likeAtMs !== undefined) {
+        likeAt = share(LIKE_PROGRESS);
+        points.push({ kind: 'like', atProgress: likeAt });
+    }
+    if (timed.saveAtMs !== undefined) {
+        const saveAt = Math.max(share(SAVE_PROGRESS), (likeAt ?? 0) + SAVE_AFTER_LIKE);
+        points.push({ kind: 'save', atProgress: Math.min(saveAt, LAST_REACTION_PROGRESS) });
+    }
+    return points;
 }
 
 /** A session lasts the asked minutes give or take this share, so runs don't all end on the minute. */
