@@ -297,26 +297,27 @@ server.registerTool('unlock_phone', {
 const APP_ARG = z.string().default('tiktok').describe('tiktok, facebook, instagram, or a bundle id; the app the session attaches to (default tiktok)');
 const BUSY = 'A doomscroll session is running on the phone; call doomscroll_stop first';
 
-async function lookContent(context: Awaited<ReturnType<typeof exploreContext>>, elements = true): Promise<Content[]> {
-    const { image, text } = await look(context, { elements });
+async function lookContent(context: Awaited<ReturnType<typeof exploreContext>>, words = true): Promise<Content[]> {
+    const { image, text } = await look(context, { words });
     return [{ type: 'image', data: image.toString('base64'), mimeType: 'image/jpeg' }, { type: 'text', text }];
 }
 
 server.registerTool('phone_look', {
     title: 'Look at the phone screen',
-    description: 'Screenshot of the phone plus the visible labelled elements of the accessibility tree (type, label, centre and size in points). '
+    description: 'Screenshot of the phone plus the text on it read with OCR, as phrases with their centre and size in points '
+        + '(icons without text are not listed: find them on the image). '
         + 'Attaches to the app as it is on screen unless launch is true (cold relaunch). For working out a flow before scripting it.',
     inputSchema: {
         app: APP_ARG,
         launch: z.boolean().optional().describe('Relaunch the app from cold first (default false)'),
-        elements: z.boolean().optional().describe('Include the element list (default true; turn off if the page source hangs)'),
+        words: z.boolean().optional().describe('Include the OCR text (default true; turn off for a faster look)'),
         udid: z.string().optional().describe('Device UDID; only needed when several phones are registered'),
     },
-}, async ({ app, launch, elements, udid }) => {
+}, async ({ app, launch, words, udid }) => {
     if (session) return failure(BUSY);
     try {
         const context = await exploreContext(app, { launch: launch ?? false, ...(udid ? { udid } : {}) });
-        return { content: await lookContent(context, elements ?? true) };
+        return { content: await lookContent(context, words ?? true) };
     } catch (error) {
         return failure(error);
     }
@@ -354,16 +355,16 @@ server.registerTool('phone_tap', {
         x: z.number(), y: z.number(),
         app: APP_ARG,
         wait_ms: z.number().int().min(0).max(10000).optional().describe('Wait before looking again (default 1500)'),
-        elements: z.boolean().optional().describe('Include the element list in the look after (default true)'),
+        words: z.boolean().optional().describe('Include the OCR text in the look after (default true)'),
         udid: z.string().optional(),
     },
-}, async ({ x, y, app, wait_ms, elements, udid }) => {
+}, async ({ x, y, app, wait_ms, words, udid }) => {
     if (session) return failure(BUSY);
     try {
         const context = await exploreContext(app, udid ? { udid } : {});
         await tap(context, x, y);
         await context.driver.pause(wait_ms ?? 1500);
-        return { content: await lookContent(context, elements ?? true) };
+        return { content: await lookContent(context, words ?? true) };
     } catch (error) {
         return failure(error);
     }
@@ -377,16 +378,16 @@ server.registerTool('phone_swipe', {
         duration_ms: z.number().int().min(100).max(3000).optional().describe('Default 450'),
         app: APP_ARG,
         wait_ms: z.number().int().min(0).max(10000).optional().describe('Wait before looking again (default 1500)'),
-        elements: z.boolean().optional(),
+        words: z.boolean().optional().describe('Include the OCR text in the look after (default true)'),
         udid: z.string().optional(),
     },
-}, async ({ from_x, from_y, to_x, to_y, duration_ms, app, wait_ms, elements, udid }) => {
+}, async ({ from_x, from_y, to_x, to_y, duration_ms, app, wait_ms, words, udid }) => {
     if (session) return failure(BUSY);
     try {
         const context = await exploreContext(app, udid ? { udid } : {});
         await swipe(context, { x: from_x, y: from_y }, { x: to_x, y: to_y }, duration_ms ?? 450);
         await context.driver.pause(wait_ms ?? 1500);
-        return { content: await lookContent(context, elements ?? true) };
+        return { content: await lookContent(context, words ?? true) };
     } catch (error) {
         return failure(error);
     }
