@@ -223,14 +223,29 @@ export function findGridTop(data: Buffer, width: number, height: number, channel
     return undefined;
 }
 
+/**
+ * OCR words of a profile's header (name, @handle, stats row, "Message"), in
+ * pixels of the whole screenshot. Any confidence: match them against known text.
+ * Works for a creator's profile and for our own Profile tab (same layout).
+ */
+export async function readProfileHeaderWords(data: Buffer, width: number, height: number, channels: number): Promise<OcrWord[]> {
+    const top = Math.round(height * HEADER_REGION.top);
+    const headerWidth = Math.round(width * HEADER_REGION.width);
+    const header = await sharp(data, { raw: { width, height, channels: channels as 1 | 2 | 3 | 4 } }).extract({
+        left: 0, top, width: headerWidth, height: Math.round(height * HEADER_REGION.height),
+    }).png().toBuffer();
+    // darkText doubles small images: map back to screenshot pixels.
+    const factor = headerWidth < 600 ? 2 : 1;
+    return (await recognizeWords(await darkText(header), 0)).map((word) => ({
+        ...word, x: word.x / factor, y: word.y / factor + top, width: word.width / factor, height: word.height / factor,
+    }));
+}
+
 /** Reads a creator's profile off a screenshot (light mode), or undefined when it isn't one. Points. */
 export async function readProfileScreenshot(screenshot: Buffer, scale: number): Promise<ProfileScreen | undefined> {
     const { data, info } = await sharp(screenshot).removeAlpha().raw().toBuffer({ resolveWithObject: true });
     const { width, height, channels } = info;
-    const header = await sharp(data, { raw: { width, height, channels } }).extract({
-        left: 0, top: Math.round(height * HEADER_REGION.top), width: Math.round(width * HEADER_REGION.width), height: Math.round(height * HEADER_REGION.height),
-    }).png().toBuffer();
-    const read = profileHeaderFromWords(await recognizeWords(await darkText(header), 0));
+    const read = profileHeaderFromWords(await readProfileHeaderWords(data, width, height, channels));
     if (!read.profile) return undefined;
 
     const button = findFollowButton(data, width, height, channels);

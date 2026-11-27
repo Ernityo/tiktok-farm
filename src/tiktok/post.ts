@@ -45,6 +45,7 @@ async function importMedia(manifest: PostManifest): Promise<number> {
     return assetCount;
 }
 
+// TODO: still uses the accessibility tree; move to OCR (docs/screenshot-migration.md, "Later").
 async function firstDisplayed(driver: Browser, selectors: string[]) {
     for (const selector of selectors) {
         const candidate = await driver.$(selector);
