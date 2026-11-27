@@ -21,9 +21,11 @@ function wiggle(value: number, [lo, hi]: readonly [number, number], random: Rand
 /**
  * One upward swipe in the style of `profile`. A real donor swipe supplies the
  * starting point, so the thumb side sets the screen position; the other values
- * are randomized within the profile's rules.
+ * are randomized within the profile's rules. `minTravel` (points) rescales the
+ * profile's travel range to start there, for apps that ignore short flicks;
+ * the spread of lengths is kept.
  */
-export function profileSwipe(profile: SwipeProfile, random: Random = Math.random): HumanSwipe {
+export function profileSwipe(profile: SwipeProfile, random: Random = Math.random, minTravel?: number): HumanSwipe {
     const rows = SWIPE_PROFILE_DATA[profile];
     const rules = SWIPE_PROFILE_RULES[profile];
     if (!rows || rows.length === 0 || !rules) throw new Error(`No swipe data for profile "${profile}"`);
@@ -31,7 +33,11 @@ export function profileSwipe(profile: SwipeProfile, random: Random = Math.random
     const r = rules.ranges;
 
     const from = { x: wiggle(donor.startX, r.startX, random, 0.05), y: wiggle(donor.startY, r.startY, random, 0.05) };
-    const travel = wiggle(donor.travel, r.travel, random);
+    const [travelLo, travelHi] = r.travel;
+    let travel = wiggle(donor.travel, r.travel, random);
+    if (minTravel !== undefined && minTravel > travelLo && minTravel < travelHi) {
+        travel = minTravel + ((travel - travelLo) / (travelHi - travelLo)) * (travelHi - minTravel);
+    }
     const endX = wiggle(donor.endX, r.endX, random, 0.05);
     const to = { x: endX, y: from.y - travel };
 

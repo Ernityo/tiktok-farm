@@ -28,6 +28,8 @@ export const instagramAdapter: AgentAppAdapter = {
     // Left of the button column, above the tab bar, sent at full resolution.
     captionCrop: { left: 0, top: 0.6, width: 0.85, height: 0.32 },
     tapRadius: 4,
+    // Flicks of 74 and 85 pt left the feed on the same Reel (2026-11-27); 122+ pt always moved it.
+    minSwipeTravel: 110,
 
     async openFeed(context) {
         const tab = findReelsTab(await readTree(context));

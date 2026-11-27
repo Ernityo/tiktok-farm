@@ -84,3 +84,16 @@ test('phones without recordings fall back to the fixed swipe by default, but ref
     assert.equal(resolveSwipeStyle(undefined, 'iphone8'), undefined);
     assert.throws(() => resolveSwipeStyle('left-thumb', 'iphone8'), /only recorded for iphonexr/);
 });
+
+test('a minimum travel lifts short swipes but keeps their spread', () => {
+    let seed = 7;
+    const random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const hi = SWIPE_PROFILE_RULES['right-thumb'].ranges.travel[1];
+    const travels = Array.from({ length: 300 }, () => {
+        const s = profileSwipe('right-thumb', random, 110);
+        return s.start.y - s.end.y;
+    });
+    for (const travel of travels) assert.ok(travel >= 109.5 && travel <= hi + 0.5, `travel ${travel} pt is between 110 and ${hi}`);
+    const distinct = new Set(travels.map((t) => Math.round(t))).size;
+    assert.ok(distinct > 50, `lengths stay varied (${distinct} distinct)`);
+});

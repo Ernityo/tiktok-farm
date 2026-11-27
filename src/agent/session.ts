@@ -126,6 +126,8 @@ export interface AgentAppAdapter {
     readonly captionCrop: CaptionCrop;
     /** Caps how far taps land from the button centre, in points. */
     readonly tapRadius?: number;
+    /** Shortest recorded-style swipe, in points, for apps that ignore short flicks. */
+    readonly minSwipeTravel?: number;
     /** Throws when `account` can't be used on this device. */
     checkAccount?(device: RegisteredDevice, account: string): void;
     /**
@@ -1044,7 +1046,9 @@ export class AgentSession {
     /** `careful`: an ad, shop post or retry, where the app's ad swipe (if any) starts above the buttons. */
     private async swipe(careful = false): Promise<SwipeRecord> {
         if (careful && this.adapter.adSwipe) return swipeRecord('ad', await this.adapter.adSwipe(this.context));
-        if (this.swipeStyle) return swipeRecord(this.swipeStyle, await performSwipe(this.context.driver, profileSwipe(this.swipeStyle)));
+        if (this.swipeStyle) {
+            return swipeRecord(this.swipeStyle, await performSwipe(this.context.driver, profileSwipe(this.swipeStyle, Math.random, this.adapter.minSwipeTravel)));
+        }
         return swipeRecord('fixed', await this.adapter.fixedSwipe(this.context));
     }
 
