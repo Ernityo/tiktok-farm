@@ -21,7 +21,7 @@ const MIN_CONFIDENCE = 40;
 // Tesseract TSV: level, page_num, block_num, par_num, line_num, word_num,
 // left, top, width, height, conf, text. Only level 5 rows are individual
 // words; levels 1-4 are page/block/paragraph/line aggregates with conf -1.
-export function parseTsv(tsv: string): OcrWord[] {
+export function parseTsv(tsv: string, minConfidence = MIN_CONFIDENCE): OcrWord[] {
     const words: OcrWord[] = [];
     for (const line of tsv.split('\n')) {
         if (!line.trim()) continue;
@@ -29,7 +29,7 @@ export function parseTsv(tsv: string): OcrWord[] {
         if (columns.length < 12 || columns[0] !== '5') continue;
         const confidence = Number(columns[10]);
         const text = columns[11].trim();
-        if (!text || !Number.isFinite(confidence) || confidence < MIN_CONFIDENCE) continue;
+        if (!text || !Number.isFinite(confidence) || confidence < minConfidence) continue;
         words.push({
             text,
             x: Number(columns[6]),
@@ -42,9 +42,10 @@ export function parseTsv(tsv: string): OcrWord[] {
     return words;
 }
 
-export async function recognizeWords(image: Buffer): Promise<OcrWord[]> {
+/** `minConfidence` lower than the default only when the words are then matched against a known list. */
+export async function recognizeWords(image: Buffer, minConfidence = MIN_CONFIDENCE): Promise<OcrWord[]> {
     const tsv = await recognizeRaw(image, { format: 'tsv' });
-    return parseTsv(tsv);
+    return parseTsv(tsv, minConfidence);
 }
 
 function normalizeHandle(handle: string): string {

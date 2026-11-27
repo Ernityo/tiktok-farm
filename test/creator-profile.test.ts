@@ -53,6 +53,17 @@ test('a followed profile: Message instead of Suivre, the suggested accounts\' bu
     if (profile.videos.length) assert.ok(Math.abs(profile.videos[0]!.y - 719) <= 15, JSON.stringify(profile.videos));
 });
 
+test('a profile that follows this account: its Suivre en retour button, not "already following"', async () => {
+    // A notification banner covers the name: the handle and stats still show.
+    const profile = await readProfileScreenshot(await profileShot('profile-follow-back.jpg'), LOOK_SCALE);
+    assert.ok(profile, 'not read as a profile');
+    assert.equal(profile.following, false);
+    assert.ok(profile.follow, 'no Suivre en retour button');
+    // Measured: the pill is centred at (97, 238) points.
+    assert.ok(Math.abs(profile.follow.x - 97) <= 12 && Math.abs(profile.follow.y - 238) <= 6, JSON.stringify(profile.follow));
+    assert.ok(Math.abs(profile.videos[0]!.y - 398) <= 15, JSON.stringify(profile.videos));
+});
+
 for (const name of ['post-normal-1.png', 'follow-back-card.png', 'live-preview.png']) {
     test(`a feed screen is not a profile: ${name}`, async () => {
         const buffer = await readFile(new URL(`./fixtures/tiktok-ads/${name}`, import.meta.url));
@@ -64,5 +75,9 @@ test('the header words: the stats row makes a profile, Message means following',
     const read = profileHeaderFromWords(['@histoiresfruitees_', '13', 'Suivis', '20,7', 'K', 'Followers', "J'aime"].map(word));
     assert.deepEqual(read, { profile: true, handle: '@histoiresfruitees_', following: false });
     assert.equal(profileHeaderFromWords(['Message', 'Suivis', 'Followers'].map(word)).following, true);
-    assert.equal(profileHeaderFromWords(['Suivis', 'Pour', 'toi'].map(word)).profile, false);
+    // OCR's i/l mix-ups still count.
+    assert.equal(profileHeaderFromWords(['@someone', 'Foliowers', 'Jaime'].map(word)).profile, true);
+    // No handle, or only one label: not a profile.
+    assert.equal(profileHeaderFromWords(['Suivis', 'Followers', "J'aime"].map(word)).profile, false);
+    assert.equal(profileHeaderFromWords(['@someone', 'Followers', 'Pour', 'toi'].map(word)).profile, false);
 });

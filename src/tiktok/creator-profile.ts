@@ -106,7 +106,7 @@ export async function findCreatorName(screenshot: Buffer, scale: number): Promis
 export interface ProfileScreen {
     /** The @handle under the name, when OCR read it (for messages only). */
     handle?: string;
-    /** The big red Follow button (never a suggested account's: those are a third as wide). */
+    /** The red Follow ("Suivre", or "Suivre en retour" next to Message) button under the stats row; never a suggested account's. */
     follow?: Point;
     /** "Message" shows where Suivre was: this account already follows the creator. */
     following: boolean;
@@ -119,25 +119,33 @@ export const PROFILE_BACK: Point = { x: 29, y: 70 };
 
 /** The header OCR'd for the stats row, handle and "Message": shares of the screen (the avatar on the right is left out). */
 const HEADER_REGION = { top: 0.1, height: 0.24, width: 0.72 } as const;
-/** Where the big Follow button is looked for. */
-const FOLLOW_BAND = { top: 0.18, bottom: 0.45 } as const;
-/** The main Follow button spans most of the width; the suggested accounts' are under a third. */
-const FOLLOW_MIN_WIDTH_SHARE = 0.45;
+/**
+ * Where the Follow button is looked for: the row right under the stats (~26%
+ * down). The suggested accounts' red buttons sit about halfway down, below it.
+ */
+const FOLLOW_BAND = { top: 0.18, bottom: 0.36 } as const;
+/** "Suivre" spans ~69% of the width; "Suivre en retour" (beside Message) ~39%. */
+const FOLLOW_MIN_WIDTH_SHARE = 0.3;
 /** Widest white gap inside the button (between letters); the suggested cards sit ~7% apart. */
 const MAX_LETTER_GAP_SHARE = 0.03;
 /** A video tile's height over its width (measured: 218 px over 166 px). */
 const TILE_ASPECT = 1.31;
 
-const normalised = (text: string) => text.toLowerCase().replace(/[^a-zà-ÿ@]/g, '');
+/** Lower case letters only, with OCR's i/l/1 mix-ups folded together ("Foliowers" = "Followers"). */
+const canonical = (text: string) => text.toLowerCase().replace(/[^a-zà-ÿ1|!]/g, '').replace(/[i1|!]/g, 'l');
+const STAT_LABELS = [['followers', 'abonnés', 'abonnes'], ['suivis', 'suivi', 'following'], ['jaime', 'likes']].map((names) => names.map(canonical));
 
-/** What the header's OCR words say: a profile has the stats row ("Followers" plus "Suivis" or "J'aime"). */
+/**
+ * What the header's OCR words say. A profile shows its @handle and the stats
+ * row ("Suivis · Followers · J'aime"): the handle plus two of the three
+ * labels. Low-confidence words are fine here: they're matched against this list.
+ */
 export function profileHeaderFromWords(words: readonly OcrWord[]): { profile: boolean; handle?: string; following: boolean } {
-    const texts = words.map((word) => normalised(word.text));
-    const followers = texts.some((text) => /^(followers|abonn[ée]s)$/.test(text));
-    const other = texts.some((text) => /^(suivis?|following|jaime|likes)$/.test(text));
+    const texts = words.map((word) => canonical(word.text));
+    const labels = STAT_LABELS.filter((names) => texts.some((text) => names.includes(text))).length;
     const handleWord = words.find((word) => /^@[\w.]{2,}/.test(word.text.trim()));
     return {
-        profile: followers && other,
+        profile: Boolean(handleWord) && labels >= 2,
         ...(handleWord ? { handle: handleWord.text.trim() } : {}),
         following: texts.some((text) => text === 'message'),
     };
@@ -168,7 +176,7 @@ const isBusy = (r: number, g: number, b: number) => {
  * longest red run spans most of the width. Pixel coordinates, or undefined.
  */
 export function findFollowButton(data: Buffer, width: number, height: number, channels: number): Point | undefined {
-    const rows: { y: number; x: number }[] = [];
+    const rows: { y: number; x: number; width: number }[] = [];
     for (let y = Math.round(height * FOLLOW_BAND.top); y < Math.round(height * FOLLOW_BAND.bottom); y++) {
         // A run bridges short gaps (the white "Suivre" letters), not the gaps between suggested accounts' cards.
         const maxGap = Math.round(width * MAX_LETTER_GAP_SHARE);
@@ -183,11 +191,12 @@ export function findFollowButton(data: Buffer, width: number, height: number, ch
         if (best < width * FOLLOW_MIN_WIDTH_SHARE) continue;
         // Rows through the letters can fall short: a gap of a few rows still belongs to the same button.
         if (rows.length && y - rows.at(-1)!.y > height * 0.015) break;
-        rows.push({ y, x: bestEnd - best / 2 });
+        rows.push({ y, x: bestEnd - best / 2, width: best });
     }
     if (rows.length < 4) return undefined;
-    const middle = rows[Math.floor(rows.length / 2)]!;
-    return { x: Math.round(middle.x), y: Math.round((rows[0]!.y + rows.at(-1)!.y) / 2) };
+    // The widest row's centre: rows through the letters can count only half the button.
+    const widest = rows.reduce((a, b) => (b.width > a.width ? b : a));
+    return { x: Math.round(widest.x), y: Math.round((rows[0]!.y + rows.at(-1)!.y) / 2) };
 }
 
 /**
@@ -221,7 +230,7 @@ export async function readProfileScreenshot(screenshot: Buffer, scale: number): 
     const header = await sharp(data, { raw: { width, height, channels } }).extract({
         left: 0, top: Math.round(height * HEADER_REGION.top), width: Math.round(width * HEADER_REGION.width), height: Math.round(height * HEADER_REGION.height),
     }).png().toBuffer();
-    const read = profileHeaderFromWords(await recognizeWords(await darkText(header)));
+    const read = profileHeaderFromWords(await recognizeWords(await darkText(header), 0));
     if (!read.profile) return undefined;
 
     const button = findFollowButton(data, width, height, channels);
