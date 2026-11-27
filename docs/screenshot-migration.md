@@ -1,68 +1,59 @@
 # Replacing the accessibility tree with screenshots
 
 WDA's page source (`mobile: source`, `/source`, `$('~id')` lookups) is slow
-on busy screens (4-15 s) and can hang WDA and the app. Everything moves to
-screenshots (OCR, templates, pixels). Done so far: the creator profile
-(`src/tiktok/creator-profile.ts`, commit dc5dbc5).
+on busy screens (4-15 s) and can hang WDA and the app. Screens are now read
+off screenshots (OCR, templates, pixels) everywhere except the TikTok post
+flow (below). `test/no-accessibility-tree.test.ts` fails if a tree read comes
+back in `src/`.
 
-Each step is its own commit, with `npm test` on screenshot fixtures and a tiny
-on-phone check (5-10 videos, one switch, or one comment).
+Fixtures are real screenshots from an iPhone XR (2x), French UI, 2026-11-28,
+except where noted.
 
-## 1. TikTok account check — `src/tiktok/account.ts`
-- `@handle`: OCR of the Profile header (`findHandleMatch` + the header test from `creator-profile.ts`).
-- ▼ switcher: pixel search just right of the name row (the row's height comes from OCR).
-- Tabs: coordinates only; drop `tabButton`.
-- Fixtures: 2-3 screenshots of our own Profile tab; rewrite `test/tiktok-account.test.ts`.
+## Done
 
-## 2. `phone_look` — `src/agent/explore.ts`, `src/agent/mcp.ts`
-- Replace the element list with OCR words: text, centre and size in points.
-- Update the tool description.
+1. **Creator profile** — `src/tiktok/creator-profile.ts` (before this round).
+2. **TikTok account check** — `src/tiktok/account.ts`. `@handle` by OCR of
+   the Profile header (one OCR slip allowed on handles of 6+), the ▼ switcher
+   by a pixel scan right of the name, tabs from the coordinate profile.
+3. **`phone_look`** — `src/agent/screen-text.ts`. OCR phrases (both
+   polarities) with centre and size in points; the option is now `words`.
+4. **Instagram Reels** — `src/instagram/reels-screen.ts`. Rail by template
+   matching (`src/agent/icon-match.ts`, shared with Facebook): comment bubble,
+   then the heart 38-82 pt above it, or a filled red heart once liked.
+   "Sponsorisée" and the account name (reel id) by OCR of the caption band,
+   progress from the bar above the tab bar, Reels tab from the tab icons.
+5. **Comment flow** — `src/agent/comment-flow.ts`. Empty text box by its
+   placeholder (OCR), send button by its blue, comment confirmed when the
+   placeholder comes back.
+6. **Keyboard** — `src/devices/screen-keyboard.ts`. Compared key by key with
+   reference screenshots (`src/devices/keyboards/<set>/`, one per layer, key
+   maps reviewed by hand); only an exact match is typed on. No match →
+   `KeyboardLayoutMismatch`, screenshot saved to `logs/keyboard-mismatch/`,
+   the comment flow closes the sheet and the feed goes on. The accent key and
+   shift (letter layers) are left out of the comparison.
+   New keyboard: `npm run keyboard:calibrate -- --set <name> --layer <layer>
+   --screenshot <file>` proposes labels; check them and run again with
+   `--row` ×4 to write the reference.
 
-## 3. Instagram Reels — `src/instagram/reels-screen.ts`, `agent-adapter.ts`, `reels-doomscroll.ts`
-- Move the template matcher in `src/facebook/reels-controls.ts` into a shared module; add Instagram heart, comment and share templates (XR, scale 2).
-- liked: red pixels in the heart. ad: OCR "Sponsorisé(e)"/"Sponsored" in the caption area.
-- onReels: Reels tab icon selected (fixed point in the tab bar). progress: bottom bar pixel scan, like `src/tiktok/video-progress.ts`.
-- reelId: account name read by OCR from the caption, frame hash as fallback.
-- Replace the `.json` tree fixtures with `.jpg` for the same cases (reel, liked, ad-reel, ad-photo, threads-card, no-progress, short caption).
+## Still to check on the phone
 
-## 4. Comment flow — `src/agent/comment-flow.ts`, `src/instagram/comment.ts`, `src/facebook/comment.ts`
-- Instagram comment button: from the rail detection (step 3). Facebook already uses screenshots.
-- Text box: OCR of the placeholder ("Ajouter un commentaire…") on the grey pill.
-- Send: OCR "Publier", or the blue send arrow on the text box's row.
-- Comment taken: the placeholder comes back. `onFeed`: the rail is detected again.
-- `pickComposer`/`pickSend` take OCR words; update `test/comment.test.ts`.
-
-## 5. Keyboard — `src/devices/wda-keyboard.ts`, `src/devices/typing.ts`
-Keyboards differ by field: an email or username field can add "@" or "." to
-the default layout, return can read "Envoyer"/"Rechercher", dark mode changes
-the colours. So nothing is assumed: the screen is compared with a reference.
-
-- **References**, per phone model + keyboard language + appearance, one per
-  layer (lower, upper, 123, #+=): a cropped screenshot of the key area plus a
-  JSON key map (label + rect in points). Built once by a calibration script
-  (screenshot → OCR proposes labels → reviewed by hand). This is the OCR
-  "cache": typing never runs OCR on keys.
-- **Matching**: crop the key area of a fresh screenshot (the QuickType
-  suggestion bar above it is excluded, it changes with the text), compare it
-  key cell by key cell with each reference. Every cell must match:
-  then that layer's key map is used.
-- **Layer checks** while typing (before each word, after shift/123): the same
-  match, replacing `readKeyboard`/`hasKey`.
-- **Keyboard visible**: any reference matches (or the keyboard's grey band is
-  there, for the "is it open yet" poll).
-- **Mismatch → flag and escape**: when no reference matches (extra key,
-  different layout, unknown layer), throw `KeyboardLayoutMismatch`, save the
-  screenshot to `logs/` and log a warning. The comment flow catches it, closes
-  the keyboard and the sheet (`closeCommentSheet`), counts the comment as
-  skipped and goes back to scrolling. Never type on a layout that wasn't matched.
-- `open()`: callers always pass the field's point (no text-field lookup).
-
-## 6. Cleanup
-- Delete `src/agent/page-source.ts`, `parseSource`, `SourceNode`.
-- A test that fails if `mobile: source`, `/source`, `driver.$(` or `$$(`
-  shows up in `src/` (except `src/tiktok/post.ts` until it's done, below).
+- **Instagram liked heart**: the fixture is a real Reel with its heart filled
+  red by hand (no liked Reel on the test account). The agent's like
+  confirmation will show whether a real liked heart reads as liked.
+- **Comment end to end** on Instagram and Facebook: the sheet, keyboard and
+  send-button screenshots are real, but no comment was sent with the new code.
+- **Keyboards**: only the comment boxes' French AZERTY keyboards on the XR
+  have references (Instagram dark with @/#, Facebook light). Dark mode on
+  Facebook, another phone or another field will be refused (and saved) until
+  calibrated.
+- **TikTok account switch**: reading the handle and the ▼ is tested on our
+  own Profile tab; a switch to the other account wasn't run.
+- Instagram cards (Threads posts, suggestions, surveys): no screenshot of one
+  yet; with no rail found they read as "other" and are skipped.
 
 ## Later: TikTok post — `src/tiktok/post.ts`
+
 Not in this round. `firstDisplayed`/`clickOne` still find "Use this sound"
 by accessibility id / predicate. To do: OCR the label on the red button and
-tap the word's centre, like the account switcher rows.
+tap the word's centre, like the account switcher rows. Then remove it from
+the guard test's allowed list.
