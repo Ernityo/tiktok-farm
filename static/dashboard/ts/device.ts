@@ -42,7 +42,7 @@ interface PostRun {
 interface DeviceSchedule {
     id: string;
     status: 'active' | 'paused' | 'completed' | 'cancelled';
-    taskType: 'doomscroll' | 'post' | 'reels-doomscroll' | 'instagram-reels-doomscroll';
+    taskType: 'doomscroll' | 'post' | 'warmup' | 'reels-doomscroll' | 'instagram-reels-doomscroll';
     timing: { kind: string; localTime?: string; timezone?: string; weekdays?: number[]; runAt?: string };
     nextRunAt: string | null;
     payload: {
@@ -56,7 +56,7 @@ interface DeviceSchedule {
 
 interface DeviceExecution {
     id: string;
-    taskType: 'doomscroll' | 'post' | 'reels-doomscroll' | 'instagram-reels-doomscroll';
+    taskType: 'doomscroll' | 'post' | 'warmup' | 'reels-doomscroll' | 'instagram-reels-doomscroll';
     status: string;
     scheduledFor: string;
     startedAt: string | null;
@@ -718,6 +718,7 @@ function taskTitle(taskType: DeviceSchedule['taskType'], payload?: DeviceSchedul
     if (taskType === 'instagram-reels-doomscroll') {
         return `Instagram Reels${payload?.durationMinutes ? ` · ${payload.durationMinutes} min` : ''}`;
     }
+    if (taskType === 'warmup') return `TikTok warm-up${payload?.account ? ` · ${payload.account}` : ''}${payload?.durationMinutes ? ` · ${payload.durationMinutes} min` : ''}`;
     if (taskType === 'doomscroll') {
         const details = payload?.durationMinutes ? ` · ${payload.durationMinutes} min` : '';
         return `Doomscroll${details}`;
@@ -787,6 +788,7 @@ function renderDeviceExecutions(executions: DeviceExecution[]): void {
         const copy = document.createElement('div');
         const title = document.createElement('h3');
         title.textContent = execution.taskType === 'post' ? 'Post'
+            : execution.taskType === 'warmup' ? 'TikTok warm-up'
             : execution.taskType === 'reels-doomscroll' ? 'Facebook Reels'
                 : execution.taskType === 'instagram-reels-doomscroll' ? 'Instagram Reels' : 'Doomscroll';
         const meta = document.createElement('p');

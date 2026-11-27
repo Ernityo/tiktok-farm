@@ -639,6 +639,8 @@ function taskTitle(taskType, payload) {
     if (taskType === 'instagram-reels-doomscroll') {
         return `Instagram Reels${payload?.durationMinutes ? ` · ${payload.durationMinutes} min` : ''}`;
     }
+    if (taskType === 'warmup')
+        return `TikTok warm-up${payload?.account ? ` · ${payload.account}` : ''}${payload?.durationMinutes ? ` · ${payload.durationMinutes} min` : ''}`;
     if (taskType === 'doomscroll') {
         const details = payload?.durationMinutes ? ` · ${payload.durationMinutes} min` : '';
         return `Doomscroll${details}`;
@@ -709,8 +711,9 @@ function renderDeviceExecutions(executions) {
         const copy = document.createElement('div');
         const title = document.createElement('h3');
         title.textContent = execution.taskType === 'post' ? 'Post'
-            : execution.taskType === 'reels-doomscroll' ? 'Facebook Reels'
-                : execution.taskType === 'instagram-reels-doomscroll' ? 'Instagram Reels' : 'Doomscroll';
+            : execution.taskType === 'warmup' ? 'TikTok warm-up'
+                : execution.taskType === 'reels-doomscroll' ? 'Facebook Reels'
+                    : execution.taskType === 'instagram-reels-doomscroll' ? 'Instagram Reels' : 'Doomscroll';
         const meta = document.createElement('p');
         meta.textContent = `${formatDate(execution.scheduledFor)}${execution.error ? ` · ${execution.error}` : ''}`;
         copy.append(title, meta);
