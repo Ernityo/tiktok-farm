@@ -85,25 +85,34 @@ async function read(frame: Buffer) {
     };
 }
 
+// The MJPEG settings are process-wide in WDA: note them now and put them back at the end.
+const mjpegKeys = ['mjpegScalingFactor', 'mjpegServerScreenshotQuality', 'mjpegServerFramerate'];
+const before = await remote.getSettings(device.udid);
+const mjpegRestore = Object.fromEntries(mjpegKeys.filter((key) => before[key] !== undefined).map((key) => [key, before[key]]));
+
 let mismatches = 0;
-for (const quality of qualities) {
-    await remote.updateSettings(device.udid, { mjpegScalingFactor: 100, mjpegServerScreenshotQuality: quality, mjpegServerFramerate: 30 });
-    console.log(`\n=== ${app}, MJPEG quality ${quality}`);
-    for (let round = 1; round <= rounds; round += 1) {
-        const [png, pngMs] = await timed(() => remote.getScreenshot(device.udid));
-        const [jpeg, jpegMs] = await timed(() => remote.getStreamFrame(device.udid, 3000));
-        await writeFile(path.join(outDirectory, `q${quality}-${round}-screenshot.png`), png);
-        await writeFile(path.join(outDirectory, `q${quality}-${round}-mjpeg.jpg`), jpeg);
-        const [a, b] = await Promise.all([read(png), read(jpeg)]);
-        console.log(`round ${round}: grab /screenshot ${pngMs} ms, mjpeg ${jpegMs} ms`);
-        console.log(`  /screenshot ${a.size}  ${JSON.stringify(a.ms)}`);
-        console.log(`  mjpeg       ${b.size}  ${JSON.stringify(b.ms)}`);
-        for (const key of ['caption', 'controls', 'progress'] as const) {
-            const same = a[key] === b[key];
-            if (!same) mismatches += 1;
-            console.log(`  ${same ? 'same' : 'DIFF'} ${key}: ${same ? a[key] : `\n    png:  ${a[key]}\n    jpeg: ${b[key]}`}`);
+try {
+    for (const quality of qualities) {
+        await remote.updateSettings(device.udid, { mjpegScalingFactor: 100, mjpegServerScreenshotQuality: quality, mjpegServerFramerate: 30 });
+        console.log(`\n=== ${app}, MJPEG quality ${quality}`);
+        for (let round = 1; round <= rounds; round += 1) {
+            const [png, pngMs] = await timed(() => remote.getScreenshot(device.udid));
+            const [jpeg, jpegMs] = await timed(() => remote.getStreamFrame(device.udid, 3000));
+            await writeFile(path.join(outDirectory, `q${quality}-${round}-screenshot.png`), png);
+            await writeFile(path.join(outDirectory, `q${quality}-${round}-mjpeg.jpg`), jpeg);
+            const [a, b] = await Promise.all([read(png), read(jpeg)]);
+            console.log(`round ${round}: grab /screenshot ${pngMs} ms, mjpeg ${jpegMs} ms`);
+            console.log(`  /screenshot ${a.size}  ${JSON.stringify(a.ms)}`);
+            console.log(`  mjpeg       ${b.size}  ${JSON.stringify(b.ms)}`);
+            for (const key of ['caption', 'controls', 'progress'] as const) {
+                const same = a[key] === b[key];
+                if (!same) mismatches += 1;
+                console.log(`  ${same ? 'same' : 'DIFF'} ${key}: ${same ? a[key] : `\n    png:  ${a[key]}\n    jpeg: ${b[key]}`}`);
+            }
         }
     }
+} finally {
+    if (Object.keys(mjpegRestore).length) await remote.updateSettings(device.udid, mjpegRestore).catch(() => undefined);
 }
 console.log(`\n${mismatches} mismatch(es). Frames in ${outDirectory}`);
 console.log('A playing video changes between the two grabs (progress, sometimes the caption); pause it for a clean comparison.');

@@ -91,6 +91,8 @@ export interface AppContext {
     scale: number;
     window: { width: number; height: number };
     screenshot(): Promise<Buffer>;
+    /** WDA's MJPEG settings before connectApp changed them; disconnectApp puts them back. */
+    mjpegRestore?: Record<string, unknown>;
 }
 
 /** What an adapter reads off a fresh video's screenshot. */
@@ -445,7 +447,9 @@ export async function connectApp(device: RegisteredDevice, bundleId: string, { l
             'appium:wdaRemotePort': device.wdaRemotePort ?? Number(process.env.WDA_REMOTE_PORT ?? 8100),
         } as WebdriverIO.Capabilities,
     });
+    let mjpegRestore: Record<string, unknown> | undefined;
     try {
+        if (FRAME_SOURCE === 'mjpeg') mjpegRestore = await currentMjpegSettings(driver);
         await driver.updateSettings({
             defaultActiveApplication: bundleId,
             // Full resolution, as /screenshot: the caption crop, OCR and pixel checks use the same coordinates.
@@ -461,11 +465,41 @@ export async function connectApp(device: RegisteredDevice, bundleId: string, { l
             driver, remoteControl, device, coordinates, scale,
             window: { width: screenSize.width, height: screenSize.height },
             screenshot: FRAME_SOURCE === 'mjpeg' ? streamScreenshot(remoteControl, device.udid) : () => remoteControl.getScreenshot(device.udid),
+            ...(mjpegRestore ? { mjpegRestore } : {}),
         };
     } catch (error) {
-        await driver.deleteSession().catch(() => undefined);
+        await disconnectApp({ driver, mjpegRestore });
         throw error;
     }
+}
+
+/** WDA's MJPEG settings that connectApp changes. */
+const MJPEG_SETTING_KEYS = ['mjpegScalingFactor', 'mjpegServerScreenshotQuality', 'mjpegServerFramerate'] as const;
+
+/** The MJPEG settings WDA has now, to put back on disconnect; undefined if they can't be read. */
+async function currentMjpegSettings(driver: Browser): Promise<Record<string, unknown> | undefined> {
+    try {
+        const settings = await driver.getSettings() as Record<string, unknown>;
+        const kept = Object.fromEntries(MJPEG_SETTING_KEYS.filter((key) => settings[key] !== undefined).map((key) => [key, settings[key]]));
+        return Object.keys(kept).length ? kept : undefined;
+    } catch (error) {
+        console.warn(`[agent] could not read WDA's MJPEG settings; they will stay full-res after the run: ${error instanceof Error ? error.message : String(error)}`);
+        return undefined;
+    }
+}
+
+/**
+ * Ends the Appium session. The MJPEG settings are process-wide in WDA, so the
+ * ones connectApp found are put back first: otherwise the dashboard's live view
+ * would keep streaming full-res frames at 30 fps after the run.
+ */
+export async function disconnectApp(context: Pick<AppContext, 'driver' | 'mjpegRestore'>): Promise<void> {
+    if (context.mjpegRestore) {
+        await context.driver.updateSettings(context.mjpegRestore).catch((error: unknown) => {
+            console.warn(`[agent] could not restore WDA's MJPEG settings: ${error instanceof Error ? error.message : String(error)}`);
+        });
+    }
+    await context.driver.deleteSession().catch(() => undefined);
 }
 
 export class AgentSession {
@@ -555,7 +589,6 @@ export class AgentSession {
         const swipeStyle = resolveSwipeStyle(options.swipeStyle, coordinateProfile(device));
         console.log(`[agent] opening ${adapter.label}`);
         const context = await connectApp(device, adapter.bundleId, { launch: true });
-        const { driver } = context;
         try {
             await adapter.openFeed?.(context);
 
@@ -584,7 +617,7 @@ export class AgentSession {
             );
             return { session, observation: await session.observe(Date.now()) };
         } catch (error) {
-            await driver.deleteSession().catch(() => undefined);
+            await disconnectApp(context);
             throw error;
         }
     }
@@ -1096,7 +1129,7 @@ export class AgentSession {
         };
         this.closed = summary;
         await writeFile(path.join(this.logDirectory, 'summary.json'), JSON.stringify(summary, null, 2)).catch(() => undefined);
-        await this.context.driver.deleteSession().catch(() => undefined);
+        await disconnectApp(this.context);
         // A failed report never fails the session.
         await writeRunReport(this.logDirectory).catch((error: unknown) => {
             console.log(`[agent] run report not written: ${error instanceof Error ? error.message : String(error)}`);

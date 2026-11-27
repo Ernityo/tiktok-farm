@@ -377,6 +377,19 @@ export class WdaRemoteControl {
         }
     }
 
+    /** WDA's current settings, through the running session or a short-lived one. */
+    async getSettings(udid: string): Promise<Record<string, unknown>> {
+        this.assertTarget(udid);
+        const status = await (await this.request('/status')).json() as { sessionId?: string | null };
+        const sessionId = status.sessionId ?? await this.createSession();
+        try {
+            const payload = await (await this.request(`/session/${sessionId}/appium/settings`)).json() as WdaPayload<Record<string, unknown>>;
+            return payload.value;
+        } finally {
+            if (!status.sessionId) await this.request(`/session/${sessionId}`, { method: 'DELETE' }).catch(() => {});
+        }
+    }
+
     private async createSession(): Promise<string> {
         const response = await this.request('/session', {
             method: 'POST',

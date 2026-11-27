@@ -11,7 +11,7 @@ import { swipeCoordinates, tapCoordinate } from '../tiktok/actions.js';
 import type { SourceNode } from '../instagram/reels-screen.js';
 import { readSource } from './page-source.js';
 import { AGENT_ADAPTERS } from './adapters.js';
-import { connectApp, resolveDevice, type AppContext } from './session.js';
+import { connectApp, disconnectApp, resolveDevice, type AppContext } from './session.js';
 
 const LOOK_IMAGE_WIDTH = 500;
 const MAX_ELEMENTS = 200;
@@ -41,7 +41,7 @@ export async function closeExplore(): Promise<boolean> {
     const open = current;
     current = undefined;
     if (!open) return false;
-    await open.context.driver.deleteSession().catch(() => undefined);
+    await disconnectApp(open.context);
     return true;
 }
 

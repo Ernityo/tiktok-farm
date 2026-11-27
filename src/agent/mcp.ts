@@ -6,7 +6,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 
 import { AGENT_ADAPTERS } from './adapters.js';
-import { AgentSession, connectApp, resolveDevice, type Observation, type SessionSummary } from './session.js';
+import { AgentSession, connectApp, disconnectApp, resolveDevice, type Observation, type SessionSummary } from './session.js';
 import { AppStuckError, MAX_COMMENT_LENGTH, sanitizeComment } from './comment.js';
 import { leaveComment, type CommentSheetSpec } from './comment-flow.js';
 import { FACEBOOK_COMMENT_SHEET } from '../facebook/comment.js';
@@ -260,7 +260,7 @@ server.registerTool('comment_reel', {
                 }],
             };
         } finally {
-            await context.driver.deleteSession().catch(() => undefined);
+            await disconnectApp(context);
         }
     } catch (error) {
         if (error instanceof AppStuckError) return failure(`${error.message}. Check the phone: the comment sheet may still be open`);
