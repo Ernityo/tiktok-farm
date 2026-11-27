@@ -126,6 +126,7 @@ async function main(): Promise<void> {
         goal: plan.goal, follows: plan.follows, noComments: true,
         ...(plan.search ? { search: plan.search } : {}),
         meta: { warmup: { day: plan.day, phase: plan.phase, startedOn: state.startedOn } },
+        source: 'warmup',
     });
     const decider = new OpenRouterDecider(apiKey, model, systemPrompt(niche, personality, values.language, 'tiktok', {
         goal: plan.goal, follows: plan.follows > 0, noComments: true, noOcrText: true,

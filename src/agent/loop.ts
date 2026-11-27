@@ -4,10 +4,12 @@
 // frame is captured, while the session OCRs the caption and runs its checks;
 // when those skip the video, the model's answer is dropped. So the model gets
 // the images only, no OCR text: build its prompt with `noOcrText`.
+// AGENT_EARLY_DECIDE=0 waits for the OCR and the checks first (the old order).
 
 import type { DecisionInput, ModelDecision, OpenRouterDecider } from './model.js';
 import type { AgentPlan } from './plan.js';
-import type { AgentSession, Frame, Observation, SessionSummary } from './session.js';
+import type { AgentSession, Frame, Observation, SessionSummary, StepTrace } from './session.js';
+import { earlyDecideEnabled } from './trace.js';
 
 /** Consecutive model failures before the session is stopped. */
 const MAX_MODEL_FAILURES = 3;
@@ -26,6 +28,13 @@ async function decide(decider: OpenRouterDecider, observation: DecisionInput, lo
         log(`model call failed, retrying: ${first instanceof Error ? first.message : String(first)}`);
         return decider.decide(observation);
     }
+}
+
+/** The decision, with when its call started and finished (for the run's step timings). */
+async function timedDecide(decider: OpenRouterDecider, observation: DecisionInput, log: (line: string) => void): Promise<{ decision: ModelDecision; trace: StepTrace }> {
+    const start = Date.now();
+    const decision = await decide(decider, observation, log);
+    return { decision, trace: { model: { start, end: Date.now() } } };
 }
 
 export function describePlan(plan: AgentPlan): string {
@@ -47,12 +56,14 @@ export async function runSession(
     let observation = first;
     let failures = 0;
     // The call started on the latest frame, if any (a retried swipe replaces it).
-    let early: { image: Buffer; decision: Promise<ModelDecision> } | undefined;
-    session.onFrame((frame) => {
-        const decision = decide(decider, modelInput(frame), log);
-        decision.catch(() => undefined); // dropped when the video is skipped in code
-        early = { image: frame.image, decision };
-    });
+    let early: { image: Buffer; decision: ReturnType<typeof timedDecide> } | undefined;
+    if (earlyDecideEnabled()) {
+        session.onFrame((frame) => {
+            const decision = timedDecide(decider, modelInput(frame), log);
+            decision.catch(() => undefined); // dropped when the video is skipped in code
+            early = { image: frame.image, decision };
+        });
+    }
     try {
         for (;;) {
             if (shouldStop()) return { summary: await session.stop('stopped') };
@@ -61,12 +72,15 @@ export async function runSession(
             early = undefined;
             let plan: AgentPlan;
             let extra: Record<string, unknown>;
+            let trace: StepTrace = {};
             if (skipReason) {
                 plan = SKIP;
                 extra = { auto: skipReason };
             } else {
                 try {
-                    const decision = await (started ?? decide(decider, modelInput(observation), log));
+                    const timed = await (started ?? timedDecide(decider, modelInput(observation), log));
+                    const { decision } = timed;
+                    trace = timed.trace;
                     failures = 0;
                     plan = decision.plan;
                     extra = { model, modelMs: decision.ms, provider: decision.provider, ...(decision.foreign ? { foreign: true } : {}) };
@@ -80,7 +94,7 @@ export async function runSession(
             }
             const where = observation.place === 'search' ? ' [search]' : '';
             log(`#${String(observation.video).padStart(3)}${where} ${describePlan(plan)}  ${skipReason ? `(auto: ${skipReason})` : `(${String(extra.modelMs)} ms${extra.foreign ? ', not in language' : ''})`}  ${observation.caption.slice(0, 70)}`);
-            const result = await session.step(plan, extra);
+            const result = await session.step(plan, extra, trace);
             if ('summary' in result) return { summary: result.summary };
             observation = result.observation;
         }

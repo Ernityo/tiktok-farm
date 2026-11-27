@@ -4,7 +4,7 @@ import test from 'node:test';
 import { runSession } from '../src/agent/loop.js';
 import type { DecisionInput, ModelDecision, OpenRouterDecider } from '../src/agent/model.js';
 import type { AgentPlan } from '../src/agent/plan.js';
-import type { AgentSession, Frame, Observation, SessionSummary } from '../src/agent/session.js';
+import type { AgentSession, Frame, Observation, SessionSummary, StepTrace } from '../src/agent/session.js';
 
 const engagement = { likes: 0, likesAllowed: 1, saves: 0, savesAllowed: 0 };
 const summary = { reason: 'completed' } as SessionSummary;
@@ -23,12 +23,12 @@ function observed(of: Frame, extra: Partial<Observation> = {}): Observation {
  */
 function fakeSession(script: Array<{ frames: Frame[]; observation: (frames: Frame[]) => Observation }>) {
     let listener: ((frame: Frame) => void) | undefined;
-    const plans: Array<{ plan: AgentPlan; extra: Record<string, unknown> }> = [];
+    const plans: Array<{ plan: AgentPlan; extra: Record<string, unknown>; trace: StepTrace }> = [];
     let index = 0;
     const session = {
         onFrame(next: ((frame: Frame) => void) | undefined) { listener = next; },
-        async step(plan: AgentPlan, extra: Record<string, unknown>) {
-            plans.push({ plan, extra });
+        async step(plan: AgentPlan, extra: Record<string, unknown>, trace: StepTrace) {
+            plans.push({ plan, extra, trace });
             const next = script[index++];
             if (!next) return { summary };
             for (const f of next.frames) listener?.(f);
@@ -91,4 +91,38 @@ test('after a retried swipe, the call on the last frame is the one used', async 
     assert.equal(calls.length, 3);
     assert.equal(calls[2]!.image, fresh.image);
     assert.equal(plans[1]!.plan.onNiche, 0.3, 'the answer for the fresh frame');
+});
+
+test('the model call is timed and its start and end reach the step', async () => {
+    const { session, plans } = fakeSession([{ frames: [frame(2, 'v2')], observation: ([f]) => observed(f!) }]);
+    const { decider } = fakeDecider();
+
+    await runSession(session, observed(frame(1, 'v1')), decider, options);
+
+    const model = plans[1]!.trace.model!;
+    assert.ok(model.start <= model.end);
+    assert.deepEqual(plans[2] ? plans[2].trace : {}, {}, 'no trace on the closing step without a call');
+});
+
+test('AGENT_EARLY_DECIDE=0 waits for the observation before calling the model', async () => {
+    process.env.AGENT_EARLY_DECIDE = '0';
+    try {
+        const second = frame(2, 'v2');
+        const { session, hasListener } = fakeSession([{ frames: [second], observation: ([f]) => observed(f!, { caption: 'seen' }) }]);
+        let listenerDuringRun = true;
+        const { decider, calls } = fakeDecider();
+        const original = session.step.bind(session);
+        session.step = (async (...args: Parameters<AgentSession['step']>) => {
+            listenerDuringRun &&= hasListener();
+            return original(...args);
+        }) as AgentSession['step'];
+
+        await runSession(session, observed(frame(1, 'v1')), decider, options);
+
+        assert.equal(listenerDuringRun, false, 'no frame listener');
+        assert.equal(calls.length, 2);
+        assert.equal(calls[1]!.image, second.image, 'video 2 judged from its observation');
+    } finally {
+        delete process.env.AGENT_EARLY_DECIDE;
+    }
 });

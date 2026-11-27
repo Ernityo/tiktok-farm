@@ -23,6 +23,8 @@ import { nicheForAccount, normalizeHandle, type Niche } from '../tiktok/niche.js
 import type { OcrWord } from '../tiktok/ocr.js';
 import { coordinateProfile } from '../tiktok/runtime-settings.js';
 import { followAllowance } from '../tiktok/warmup.js';
+import { writeRunReport } from './report.js';
+import { earlyDecideEnabled, type SessionSource, type Span, type VideoSpans } from './trace.js';
 
 // One agentic doomscroll session on one phone, for any short-video feed
 // (TikTok, Facebook Reels, Instagram Reels): observe a video, take the
@@ -204,6 +206,14 @@ export interface StartOptions {
     search?: SearchDetour;
     /** Extra fields written to session.json and summary.json (e.g. the warm-up day and phase). */
     meta?: Record<string, unknown>;
+    /** Who started the session; written to session.json and summary.json. */
+    source?: SessionSource;
+}
+
+/** What the caller knows about how this video's plan was made (see `step`). */
+export interface StepTrace {
+    /** When the model call that decided this video started and finished. */
+    model?: { start: number; end: number };
 }
 
 export interface Observation {
@@ -253,14 +263,17 @@ export interface SessionSummary {
     likeRate: number;
     saveRate: number;
     ads: number;
-    /** Time from a screenshot being returned to the plan arriving. */
+    /** Time from the observation being ready to the plan arriving (all videos, auto-skips included). */
     medianDecisionMs?: number;
+    /** Time from the swipe landing to the plan arriving, for videos the model judged. */
+    medianTimeToDecisionMs?: number;
     /** Screen time of skipped videos, from the swipe landing to the next swipe. */
     medianSkipScreenMs?: number;
     elapsedMs: number;
     logDirectory: string;
     /** The account check after the first videos, when the app has one. */
     accountCheck?: AccountCheck;
+    source?: SessionSource;
     meta?: Record<string, unknown>;
 }
 
@@ -277,6 +290,18 @@ interface CurrentVideo {
     place: FeedPlace;
     /** Extra swipes it took to get here because the previous swipe didn't move the feed on. */
     retrySwipes: SwipeRecord[];
+    /** Timings of the capture that observed it (the last one, after a retried swipe). */
+    marks: CaptureMarks;
+}
+
+/** When each part of a capture finished (Date.now()). */
+interface CaptureMarks {
+    startedAt: number;
+    settledAt: number;
+    shotAt: number;
+    imagesAt: number;
+    ocrAt: number;
+    inspectAt: number;
 }
 
 type WatchOutcome =
@@ -409,6 +434,7 @@ export class AgentSession {
     private accountCheckAfter: number | undefined;
     private accountCheck: AccountCheck | undefined;
     private readonly decisionMs: number[] = [];
+    private readonly timeToDecisionMs: number[] = [];
     private readonly skipScreenMs: number[] = [];
     private readonly startedAt = Date.now();
 
@@ -421,7 +447,7 @@ export class AgentSession {
         readonly niche: Niche,
         readonly personality: Personality,
         private readonly swipeStyle: SwipeProfile | undefined,
-        private readonly extras: Pick<StartOptions, 'goal' | 'follows' | 'noComments' | 'search' | 'meta'> & { lengthMs: number },
+        private readonly extras: Pick<StartOptions, 'goal' | 'follows' | 'noComments' | 'search' | 'meta' | 'source'> & { lengthMs: number },
     ) {
         if (account && adapter.ensureAccount) this.accountCheckAfter = 1 + Math.floor(Math.random() * 2);
         if (extras.search) this.searchState = 'pending';
@@ -476,13 +502,16 @@ export class AgentSession {
                 ...(options.follows ? { follows: options.follows } : {}),
                 ...(options.search ? { search: options.search } : {}),
                 ...(options.meta ? { meta: options.meta } : {}),
+                ...(options.source ? { source: options.source } : {}),
+                // The latency settings, to compare runs (the MCP path has no model call of its own).
+                settings: { settleMs: SETTLE_MS, ...(options.source === 'mcp' ? {} : { earlyDecide: earlyDecideEnabled() }) },
                 startedAt: new Date().toISOString(),
             }, null, 2));
             const session = new AgentSession(
                 adapter, context, Date.now() + lengthMs, logDirectory, account, niche, options.personality, swipeStyle,
                 {
                     lengthMs, goal: options.goal, follows: options.follows, noComments: options.noComments, search: options.search,
-                    meta: options.meta,
+                    meta: options.meta, source: options.source,
                 },
             );
             return { session, observation: await session.observe(Date.now()) };
@@ -527,20 +556,28 @@ export class AgentSession {
     }
 
     private async capture() {
+        const startedAt = Date.now();
         await sleep(SETTLE_MS);
+        const settledAt = Date.now();
         const screenshot = await this.context.screenshot();
-        const words = readCaptionWords(screenshot).catch((): OcrWord[] => []);
-        const inspection = this.adapter.inspect?.(this.context, screenshot) ?? Promise.resolve<VideoInspection>({ isAd: false });
+        const shotAt = Date.now();
+        let ocrAt = shotAt;
+        let inspectAt = shotAt;
+        const words = readCaptionWords(screenshot).catch((): OcrWord[] => []).finally(() => { ocrAt = Date.now(); });
+        const inspection = (this.adapter.inspect?.(this.context, screenshot) ?? Promise.resolve<VideoInspection>({ isAd: false }))
+            .finally(() => { inspectAt = Date.now(); });
         // Still rejects into the Promise.all below; this only stops an early failure counting as unhandled.
         inspection.catch(() => undefined);
         const [image, captionImage] = await Promise.all([
             sharp(screenshot).resize({ width: IMAGE_WIDTH }).jpeg({ quality: IMAGE_QUALITY }).toBuffer(),
             this.captionCrop(screenshot),
         ]);
+        const imagesAt = Date.now();
         this.frameListener?.({ video: this.videos + 1, image, captionImage, engagement: this.engagementFor(this.decisionMs.length + 1) });
         const [captionWords, inspected] = await Promise.all([words, inspection]);
         const caption = captionWords.map((word) => word.text).join(' ').slice(0, CAPTION_MAX_CHARS);
-        return { screenshot, words: captionWords, image, captionImage, inspection: inspected, caption };
+        const marks: CaptureMarks = { startedAt, settledAt, shotAt, imagesAt, ocrAt, inspectAt };
+        return { screenshot, words: captionWords, image, captionImage, inspection: inspected, caption, marks };
     }
 
     /** Likes/saves/comments/follows done, and what the rate allows if this video gets one. */
@@ -564,7 +601,7 @@ export class AgentSession {
 
     /** `previous` is the video swiped away, to notice a swipe that didn't move the feed on. */
     private async observe(arrivedAt: number, previous?: { caption: string; reelId?: string }): Promise<Observation> {
-        let { screenshot, words, image, captionImage, inspection, caption } = await this.capture();
+        let { screenshot, words, image, captionImage, inspection, caption, marks } = await this.capture();
         const retrySwipes: SwipeRecord[] = [];
         // A swipe can fail to move the feed on (seen on TikTok Shop posts):
         // the same video is still there, so swipe again from higher up.
@@ -572,7 +609,7 @@ export class AgentSession {
             console.log(`[agent] swipe did not move the feed on; swiping again (${retry}/${MAX_SWIPE_RETRIES})`);
             retrySwipes.push(await this.swipe(true));
             arrivedAt = Date.now();
-            ({ screenshot, words, image, captionImage, inspection, caption } = await this.capture());
+            ({ screenshot, words, image, captionImage, inspection, caption, marks } = await this.capture());
         }
         const isAd = inspection.isAd || adFromWords(words).isAd;
         if (inspection.noControls || inspection.autoSkip === 'card') {
@@ -585,7 +622,7 @@ export class AgentSession {
         }
         this.videos += 1;
         this.current = {
-            index: this.videos, arrivedAt, observedAt: Date.now(), caption, isAd, retrySwipes, place: this.place,
+            index: this.videos, arrivedAt, observedAt: Date.now(), caption, isAd, retrySwipes, place: this.place, marks,
             strictAd: isAd || !this.adapter.strictAd ? Promise.resolve(isAd) : this.adapter.strictAd(screenshot).catch(() => false),
             ...(inspection.reelId ? { reelId: inspection.reelId } : {}),
         };
@@ -605,9 +642,10 @@ export class AgentSession {
     /**
      * Carries out the plan for the current video, swipes, and observes the
      * next one. Returns a summary instead once the session time is up.
-     * `logExtra` is added to this video's line in decisions.jsonl.
+     * `logExtra` is added to this video's line in decisions.jsonl; `trace`
+     * adds the caller's timings to its `spans`.
      */
-    async step(plan: AgentPlan, logExtra: Record<string, unknown> = {}): Promise<{ observation: Observation } | { summary: SessionSummary }> {
+    async step(plan: AgentPlan, logExtra: Record<string, unknown> = {}, trace: StepTrace = {}): Promise<{ observation: Observation } | { summary: SessionSummary }> {
         if (this.closed) return { summary: this.closed };
         if (this.busy) throw new Error('A step is already running');
         const video = this.current;
@@ -628,6 +666,8 @@ export class AgentSession {
                 ...(this.lastCommentAt !== undefined ? { lastCommentAt: this.lastCommentAt } : {}),
             });
             this.decisionMs.push(decidedAt - video.observedAt);
+            if (logExtra.auto === undefined) this.timeToDecisionMs.push(decidedAt - video.arrivedAt);
+            const actionSpans: NonNullable<VideoSpans['actions']> = [];
 
             const actions: Array<{ at: number; kind: 'like' | 'save' | 'comment' }> = [];
             if (timed.likeAtMs !== undefined) actions.push({ at: timed.likeAtMs, kind: 'like' });
@@ -643,9 +683,11 @@ export class AgentSession {
             let lastActionAt = -Infinity;
             for (const action of actions) {
                 await sleep(Math.max(shownAt + action.at, lastActionAt + MIN_ACTION_GAP_MS) - Date.now());
+                const actionStart = Date.now();
                 if (action.kind === 'comment') {
                     commented = await this.leaveComment(timed.comment!);
                     lastActionAt = Date.now();
+                    actionSpans.push({ kind: 'comment', at: [actionStart, lastActionAt] });
                     continue;
                 }
                 // Located right before the tap: the rail moves, and Reels can move on by themselves.
@@ -670,6 +712,7 @@ export class AgentSession {
                     this.saves += 1;
                 }
                 lastActionAt = Date.now();
+                actionSpans.push({ kind: action.kind, at: [actionStart, lastActionAt] });
             }
             // After a comment the video has been on screen a long while already, and
             // it may have stopped behind the sheet: a short look, then move on.
@@ -678,6 +721,7 @@ export class AgentSession {
                 : plan.watch === 'full'
                     ? await this.watchToEnd(shownAt, timed.watchMs, video.reelId)
                     : (await sleep(Math.max(shownAt + timed.watchMs, lastActionAt + MIN_ACTION_GAP_MS) - Date.now()), { by: 'timer' });
+            const watchedAt = Date.now();
 
             const isAd = await video.strictAd;
             if (isAd) this.ads += 1;
@@ -691,7 +735,9 @@ export class AgentSession {
                 if (onNiche) this.searchOnNiche += 1;
             }
             // After the watch, like someone who decides at the end: follow the creator.
+            const followStart = Date.now();
             const followed = supported.follow && !isAd ? await this.followCreator() : undefined;
+            const followEnd = Date.now();
             if (followed) this.advancedOnItsOwn = false;
             if (plan.watch === 'skip') {
                 this.skips += 1;
@@ -706,18 +752,45 @@ export class AgentSession {
             // moment, like someone putting the phone down, then the app closes.
             const last = this.remainingMs <= 0;
             let accountCheck: AccountCheck | undefined;
+            let accountCheckAt: Span | undefined;
             if (!last && this.accountCheckAfter !== undefined && video.index >= this.accountCheckAfter) {
+                const checkStart = Date.now();
                 accountCheck = await this.checkAccount();
+                accountCheckAt = [checkStart, Date.now()];
                 // Back on the feed: whatever was there is swiped on as usual.
                 this.advancedOnItsOwn = false;
             }
             let swipe: SwipeRecord | null = null;
+            const detourStart = Date.now();
             const detour = last || this.accountCheckAfter !== undefined ? undefined : await this.searchDetour();
+            const detourEnd = Date.now();
             if (last) await sleep(finalLingerMs());
             else if (detour) console.log(`[agent] ${detour === 'opened' ? 'on the search results' : 'back on the main feed'}`);
             else if (this.advancedOnItsOwn) console.log('[agent] already on the next video; not swiping');
             else swipe = await this.swipe(isAd || SHOP_POST.test(video.caption));
             const arrivedAt = Date.now();
+            const swipeAt: Span | undefined = swipe ? [detourEnd, arrivedAt] : undefined;
+
+            const rel = (at: number) => at - video.arrivedAt;
+            const span = ([start, end]: Span): Span => [rel(start), rel(end)];
+            const { marks } = video;
+            const spans: VideoSpans = {
+                ...(SETTLE_MS > 0 ? { settle: span([marks.startedAt, marks.settledAt]) } : {}),
+                screenshot: span([marks.settledAt, marks.shotAt]),
+                images: span([marks.shotAt, marks.imagesAt]),
+                ocr: span([marks.shotAt, marks.ocrAt]),
+                inspect: span([marks.shotAt, marks.inspectAt]),
+                observed: rel(video.observedAt),
+                ...(trace.model ? { model: span([trace.model.start, trace.model.end]) } : {}),
+                decided: rel(decidedAt),
+                ...(actionSpans.length ? { actions: actionSpans.map(({ kind, at }) => ({ kind, at: span(at) })) } : {}),
+                watched: rel(watchedAt),
+                ...(followed ? { follow: span([followStart, followEnd]) } : {}),
+                ...(accountCheckAt ? { accountCheck: span(accountCheckAt) } : {}),
+                ...(detour ? { search: span([detourStart, detourEnd]) } : {}),
+                ...(swipeAt ? { swipe: span(swipeAt) } : {}),
+                end: rel(arrivedAt),
+            };
 
             await appendFile(path.join(this.logDirectory, 'decisions.jsonl'), `${JSON.stringify({
                 video: video.index, caption: video.caption, isAd, ...(video.reelId ? { reelId: video.reelId } : {}),
@@ -728,6 +801,7 @@ export class AgentSession {
                 ...(video.retrySwipes.length ? { retrySwipes: video.retrySwipes } : {}),
                 ...(accountCheck ? { accountCheck } : {}), ...logExtra,
                 ...(last ? { last: true } : {}),
+                spans,
             })}\n`).catch(() => undefined);
 
             if (last) return { summary: await this.stop('completed') };
@@ -904,15 +978,21 @@ export class AgentSession {
             saveRate: rate(this.saves),
             ads: this.ads,
             medianDecisionMs: median(this.decisionMs),
+            medianTimeToDecisionMs: median(this.timeToDecisionMs),
             medianSkipScreenMs: median(this.skipScreenMs),
             elapsedMs: Date.now() - this.startedAt,
             logDirectory: this.logDirectory,
             ...(this.accountCheck ? { accountCheck: this.accountCheck } : {}),
+            ...(this.extras.source ? { source: this.extras.source } : {}),
             ...(this.extras.meta ? { meta: this.extras.meta } : {}),
         };
         this.closed = summary;
         await writeFile(path.join(this.logDirectory, 'summary.json'), JSON.stringify(summary, null, 2)).catch(() => undefined);
         await this.context.driver.deleteSession().catch(() => undefined);
+        // A failed report never fails the session.
+        await writeRunReport(this.logDirectory).catch((error: unknown) => {
+            console.log(`[agent] run report not written: ${error instanceof Error ? error.message : String(error)}`);
+        });
         return summary;
     }
 }

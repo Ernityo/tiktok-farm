@@ -63,7 +63,7 @@ const startOptions = {
     ...(values.niche ? { niche: { description: values.niche, keywords: [], avoid: [] } } : {}),
     ...(swipeStyle ? { swipeStyle } : {}),
 };
-const { session, observation: first } = await AgentSession.start({ ...startOptions, adapter: AGENT_ADAPTERS[app] });
+const { session, observation: first } = await AgentSession.start({ ...startOptions, adapter: AGENT_ADAPTERS[app], source: 'runner' });
 const decider = new OpenRouterDecider(apiKey, model, systemPrompt(session.niche, personality, values.language, app, { noOcrText: true }));
 console.log(`[scroll] ${app} · ${session.account ?? 'current account'} · ${personality} · ${minutes} min · ${model}\n[scroll] niche: ${session.niche.description}${session.niche.avoid.length ? ` · avoid: ${session.niche.avoid.join(', ')}` : ''} · language: ${values.language}`);
 

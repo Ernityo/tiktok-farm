@@ -120,6 +120,7 @@ server.registerTool('doomscroll_start', {
     try {
         const started = await AgentSession.start({
             adapter: AGENT_ADAPTERS[app],
+            source: 'mcp',
             minutes,
             personality,
             ...(account ? { account } : {}),
