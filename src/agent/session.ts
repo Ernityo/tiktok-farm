@@ -227,6 +227,9 @@ export interface Observation {
     autoSkip?: string;
 }
 
+/** A fresh frame with what the model needs, before the OCR and the code-side checks (see `onFrame`). */
+export type Frame = Pick<Observation, 'video' | 'image' | 'captionImage' | 'engagement'>;
+
 export interface SessionSummary {
     reason: 'completed' | 'stopped' | 'error';
     app: AgentApp;
@@ -376,6 +379,7 @@ export async function connectApp(device: RegisteredDevice, bundleId: string, { l
 export class AgentSession {
     private current: CurrentVideo | undefined;
     private busy = false;
+    private frameListener: ((frame: Frame) => void) | undefined;
     private closed: SessionSummary | undefined;
     /** Videos observed so far (numbers the screenshots). */
     private videos = 0;
@@ -512,17 +516,50 @@ export class AgentSession {
             .toBuffer();
     }
 
+    /**
+     * Called with each fresh frame as soon as the model's images are ready,
+     * before the caption OCR and the adapter's checks: the runner starts the
+     * model call here, alongside them. Several frames can come for one video
+     * (a swipe that didn't move the feed is retried); the last one is observed.
+     */
+    onFrame(listener: ((frame: Frame) => void) | undefined): void {
+        this.frameListener = listener;
+    }
+
     private async capture() {
         await sleep(SETTLE_MS);
         const screenshot = await this.context.screenshot();
-        const [words, image, captionImage, inspection] = await Promise.all([
-            readCaptionWords(screenshot).catch((): OcrWord[] => []),
+        const words = readCaptionWords(screenshot).catch((): OcrWord[] => []);
+        const inspection = this.adapter.inspect?.(this.context, screenshot) ?? Promise.resolve<VideoInspection>({ isAd: false });
+        // Still rejects into the Promise.all below; this only stops an early failure counting as unhandled.
+        inspection.catch(() => undefined);
+        const [image, captionImage] = await Promise.all([
             sharp(screenshot).resize({ width: IMAGE_WIDTH }).jpeg({ quality: IMAGE_QUALITY }).toBuffer(),
             this.captionCrop(screenshot),
-            this.adapter.inspect?.(this.context, screenshot) ?? Promise.resolve<VideoInspection>({ isAd: false }),
         ]);
-        const caption = words.map((word) => word.text).join(' ').slice(0, CAPTION_MAX_CHARS);
-        return { screenshot, words, image, captionImage, inspection, caption };
+        this.frameListener?.({ video: this.videos + 1, image, captionImage, engagement: this.engagementFor(this.decisionMs.length + 1) });
+        const [captionWords, inspected] = await Promise.all([words, inspection]);
+        const caption = captionWords.map((word) => word.text).join(' ').slice(0, CAPTION_MAX_CHARS);
+        return { screenshot, words: captionWords, image, captionImage, inspection: inspected, caption };
+    }
+
+    /** Likes/saves/comments/follows done, and what the rate allows if this video gets one. */
+    private engagementFor(judgedIncludingThis: number): Observation['engagement'] {
+        const profile = PROFILES[this.personality];
+        const followsAllowed = this.followsAllowed();
+        return {
+            likes: this.likes, likesAllowed: engagementAllowance(judgedIncludingThis, profile.likeChance),
+            saves: this.saves, savesAllowed: this.adapter.canSave ? engagementAllowance(judgedIncludingThis, profile.saveChance) : 0,
+            ...(followsAllowed > 0 ? { follows: this.follows, followsAllowed } : {}),
+            ...(this.canComment()
+                // The model only sees a comments line while one may be left now.
+                ? {
+                    comments: this.comments,
+                    commentsAllowed: this.commentsWarm() && commentOpen(judgedIncludingThis, this.comments, this.lastCommentAt, commentChance(this.personality))
+                        ? commentAllowance(judgedIncludingThis, commentChance(this.personality)) : this.comments,
+                }
+                : {}),
+        };
     }
 
     /** `previous` is the video swiped away, to notice a swipe that didn't move the feed on. */
@@ -557,25 +594,10 @@ export class AgentSession {
             writeFile(`${stem}.jpg`, image).catch(() => undefined),
             writeFile(`${stem}-caption.jpg`, captionImage).catch(() => undefined),
         ]);
-        const judgedIncludingThis = this.decisionMs.length + 1;
-        const profile = PROFILES[this.personality];
         const autoSkip = autoSkipReason({ isAd, caption }) ?? inspection.autoSkip;
-        const followsAllowed = this.followsAllowed();
         return {
             video: this.videos, image, captionImage, caption, isAd, remainingMs: this.remainingMs, place: this.place,
-            engagement: {
-                likes: this.likes, likesAllowed: engagementAllowance(judgedIncludingThis, profile.likeChance),
-                saves: this.saves, savesAllowed: this.adapter.canSave ? engagementAllowance(judgedIncludingThis, profile.saveChance) : 0,
-                ...(followsAllowed > 0 ? { follows: this.follows, followsAllowed } : {}),
-                ...(this.canComment()
-                    // The model only sees a comments line while one may be left now.
-                    ? {
-                        comments: this.comments,
-                        commentsAllowed: this.commentsWarm() && commentOpen(judgedIncludingThis, this.comments, this.lastCommentAt, commentChance(this.personality))
-                            ? commentAllowance(judgedIncludingThis, commentChance(this.personality)) : this.comments,
-                    }
-                    : {}),
-            },
+            engagement: this.engagementFor(this.decisionMs.length + 1),
             ...(autoSkip ? { autoSkip } : {}),
         };
     }

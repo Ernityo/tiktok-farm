@@ -77,6 +77,8 @@ export interface PromptOptions {
     follows?: boolean;
     /** Never ask for comments, even on apps that can comment (warm-up). */
     noComments?: boolean;
+    /** The model gets no OCR caption text, only the screenshot and the caption crop (the code still reads it, in parallel). */
+    noOcrText?: boolean;
 }
 
 /** Throws when the niche can't drive a session with this goal. */
@@ -113,7 +115,9 @@ export function systemPrompt(
         ];
     return [
         `You scroll a ${wording.feed} for one account (a ${personality} viewer), ${teaching}.`,
-        'For each video you get a screenshot, a full-resolution crop of its caption area, and noisy OCR caption text. Reply with JSON only:',
+        options.noOcrText
+            ? 'For each video you get a screenshot and a full-resolution crop of its caption area. Reply with JSON only:'
+            : 'For each video you get a screenshot, a full-resolution crop of its caption area, and noisy OCR caption text. Reply with JSON only:',
         `{${fields.join(', ')}}`,
         ...wording.foreign(language),
         wording.skip,
@@ -143,7 +147,8 @@ export function systemPrompt(
 }
 
 /** What the model sees for one video. The caption crop is missing from runs recorded before it existed. */
-export type DecisionInput = Pick<Observation, 'video' | 'image' | 'caption' | 'isAd' | 'engagement'> & { captionImage?: Buffer };
+/** Without `caption` (OCR text not read yet) the caption line is left out. */
+export type DecisionInput = Pick<Observation, 'video' | 'image' | 'isAd' | 'engagement'> & { caption?: string; captionImage?: Buffer };
 
 export function userText(observation: DecisionInput): string {
     const e = observation.engagement;
@@ -156,7 +161,7 @@ export function userText(observation: DecisionInput): string {
             ...((e.commentsAllowed ?? 0) > (e.comments ?? 0) ? [`comments ${e.comments ?? 0}/${e.commentsAllowed} allowed`] : []),
             ...((e.followsAllowed ?? 0) > (e.follows ?? 0) ? [`follows ${e.follows ?? 0}/${e.followsAllowed} allowed`] : []),
         ].join(' · '),
-        observation.caption ? `caption (OCR, noisy): ${observation.caption}` : 'caption: (none read)',
+        ...(observation.caption === undefined ? [] : [observation.caption ? `caption (OCR, noisy): ${observation.caption}` : 'caption: (none read)']),
     ].join('\n');
 }
 

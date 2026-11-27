@@ -128,7 +128,7 @@ async function main(): Promise<void> {
         meta: { warmup: { day: plan.day, phase: plan.phase, startedOn: state.startedOn } },
     });
     const decider = new OpenRouterDecider(apiKey, model, systemPrompt(niche, personality, values.language, 'tiktok', {
-        goal: plan.goal, follows: plan.follows > 0, noComments: true,
+        goal: plan.goal, follows: plan.follows > 0, noComments: true, noOcrText: true,
     }));
     const { summary, error } = await runSession(session, observation, decider, {
         model, shouldStop: () => stopping, log: (line) => console.log(`[warmup] ${line}`),

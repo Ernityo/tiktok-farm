@@ -3,7 +3,7 @@
 // model's watch choice with the one recorded in the run. Use it to try a
 // model, a niche wording or a prompt change without the phone.
 //
-//   npm run agent:bench -- .agent-runs/<run> [--model a --model b] [--niche "..."] [--language French]
+//   npm run agent:bench -- .agent-runs/<run> [--model a --model b] [--niche "..."] [--language French] [--ocr-text]
 //
 // The niche defaults to the run account's current saved niche (devices.json),
 // falling back to the niche the run was recorded with. Needs OPENROUTER_API_KEY.
@@ -15,7 +15,7 @@ import { parseArgs } from 'node:util';
 import { loadRegisteredDevices } from '@git-agni/phone-farm-core';
 
 import { AGENT_ADAPTERS } from './adapters.js';
-import { DEFAULT_AGENT_MODEL, OpenRouterDecider, systemPrompt, type AgentApp } from './model.js';
+import { DEFAULT_AGENT_MODEL, OpenRouterDecider, systemPrompt, type AgentApp, type ScrollGoal } from './model.js';
 import { autoSkipReason, engagementAllowance, type AgentPlan } from './plan.js';
 import { PROFILES, type Personality } from '../tiktok/doomscroll-profile.js';
 import { nicheForAccount, type Niche } from '../tiktok/niche.js';
@@ -27,6 +27,9 @@ interface RecordedSession {
     account?: string;
     niche: Niche;
     personality: Personality;
+    /** Warm-up runs: judged against the persona or the niche, with follows. */
+    goal?: ScrollGoal;
+    follows?: number;
 }
 
 interface RecordedDecision {
@@ -44,6 +47,9 @@ const { values, positionals } = parseArgs({
         model: { type: 'string', multiple: true },
         niche: { type: 'string' },
         language: { type: 'string', default: 'French' },
+        // Also give the model the OCR caption text and ad flag, as the MCP tools do. The live
+        // runner and warm-up don't: their call starts before the OCR is done (src/agent/loop.ts).
+        'ocr-text': { type: 'boolean', default: false },
     },
 });
 
@@ -79,7 +85,11 @@ const optional = async (file: string) => readFile(file).catch(() => undefined);
 const percentile = (sorted: number[], share: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * share))];
 
 for (const model of models) {
-    const decider = new OpenRouterDecider(apiKey, model, systemPrompt(niche, personality, values.language, app));
+    const decider = new OpenRouterDecider(apiKey, model, systemPrompt(niche, personality, values.language, app, {
+        noOcrText: !values['ocr-text'],
+        // Replayed with the goal it was recorded with, as the warm-up runs it.
+        ...(session.goal ? { goal: session.goal, follows: (session.follows ?? 0) > 0, noComments: true } : {}),
+    }));
     console.log(`\n[bench] ${model}`);
     const times: number[] = [];
     let same = 0;
@@ -109,8 +119,8 @@ for (const model of models) {
                     video: recorded.video,
                     image,
                     ...(captionImage ? { captionImage } : {}),
-                    caption: recorded.caption,
-                    isAd: recorded.isAd,
+                    ...(values['ocr-text'] ? { caption: recorded.caption } : {}),
+                    isAd: values['ocr-text'] ? recorded.isAd : false,
                     engagement: {
                         likes, likesAllowed: engagementAllowance(judged, profile.likeChance),
                         saves, savesAllowed: canSave ? engagementAllowance(judged, profile.saveChance) : 0,
