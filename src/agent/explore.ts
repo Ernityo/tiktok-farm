@@ -4,6 +4,9 @@
 // it is scripted. One Appium session is kept open between calls and
 // reattached when the app changes.
 
+import { mkdir } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+
 import sharp from 'sharp';
 
 import { loadRegisteredDevices } from '../devices/registry.js';
@@ -87,6 +90,18 @@ export async function look(context: AppContext, { elements = true }: { elements?
         }
     }
     return { image, text };
+}
+
+/** Writes a full-resolution screenshot to `path` (PNG or JPEG by extension); returns where, its size and a small preview. */
+export async function saveScreenshot(context: AppContext, path: string) {
+    const format = /\.jpe?g$/i.test(path) ? 'jpeg' : /\.png$/i.test(path) ? 'png' : undefined;
+    if (!format) throw new Error(`Screenshot path must end in .png or .jpg: ${path}`);
+    const screenshot = sharp(await context.screenshot());
+    const file = resolve(path);
+    await mkdir(dirname(file), { recursive: true });
+    const { width, height } = await (format === 'png' ? screenshot.clone().png() : screenshot.clone().jpeg({ quality: 95 })).toFile(file);
+    const preview = await screenshot.resize({ width: LOOK_IMAGE_WIDTH }).jpeg({ quality: 70 }).toBuffer();
+    return { path: file, width, height, preview };
 }
 
 export async function tap(context: AppContext, x: number, y: number, label = 'explore tap'): Promise<void> {

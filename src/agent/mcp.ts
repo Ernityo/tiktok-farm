@@ -22,7 +22,7 @@ import { loadRegisteredDevices } from '../devices/registry.js';
 import { RegistryWdaRemoteControl } from '../devices/registry-remote.js';
 import { emitTouch } from '../devices/touch-events.js';
 import { MAX_TYPING_LENGTH } from '../devices/typing.js';
-import { closeExplore, exploreContext, look, swipe, tap } from './explore.js';
+import { closeExplore, exploreContext, look, saveScreenshot, swipe, tap } from './explore.js';
 
 // MCP server for agentic doomscroll (TikTok, Facebook Reels or Instagram
 // Reels), driven from an interactive Claude Code session (registered in
@@ -317,6 +317,31 @@ server.registerTool('phone_look', {
     try {
         const context = await exploreContext(app, { launch: launch ?? false, ...(udid ? { udid } : {}) });
         return { content: await lookContent(context, elements ?? true) };
+    } catch (error) {
+        return failure(error);
+    }
+});
+
+server.registerTool('phone_screenshot', {
+    title: 'Save a phone screenshot',
+    description: 'Saves a full-resolution screenshot of the phone to a file (e.g. a test fixture) and returns its path and size, plus a small preview. '
+        + 'No accessibility tree is read. Attaches to the app as it is on screen.',
+    inputSchema: {
+        path: z.string().optional().describe('Where to save it, relative to the repo or absolute; .png or .jpg (default logs/screenshots/<app>-<time>.png)'),
+        app: APP_ARG,
+        udid: z.string().optional().describe('Device UDID; only needed when several phones are registered'),
+    },
+}, async ({ path, app, udid }) => {
+    if (session) return failure(BUSY);
+    try {
+        const context = await exploreContext(app, udid ? { udid } : {});
+        const saved = await saveScreenshot(context, path ?? `logs/screenshots/${app.replace(/[^\w.-]/g, '_')}-${new Date().toISOString().replace(/[:.]/g, '-')}.png`);
+        return {
+            content: [
+                { type: 'image' as const, data: saved.preview.toString('base64'), mimeType: 'image/jpeg' },
+                { type: 'text' as const, text: `Saved ${saved.path} (${saved.width}x${saved.height} px, screen ${context.window.width}x${context.window.height} points)` },
+            ],
+        };
     } catch (error) {
         return failure(error);
     }
