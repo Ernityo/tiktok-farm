@@ -4,7 +4,13 @@ import test from 'node:test';
 import { commentAllowance, commentOpen, MAX_COMMENT_LENGTH, MAX_COMMENTS_PER_SESSION, sanitizeComment } from '../src/agent/comment.js';
 import { parseReply, systemPrompt, userText } from '../src/agent/model.js';
 import { timePlan } from '../src/agent/plan.js';
-import { pickComposer, pickSend } from '../src/agent/comment-flow.js';
+import { readFile } from 'node:fs/promises';
+
+import sharp from 'sharp';
+
+import { findPlaceholder, findSendButton, readSheetWords } from '../src/agent/comment-flow.js';
+import { FACEBOOK_COMMENT_SHEET } from '../src/facebook/comment.js';
+import { INSTAGRAM_COMMENT_SHEET } from '../src/instagram/comment.js';
 
 const niche = { description: 'cats', keywords: [], avoid: [] };
 const screen = { width: 414, height: 896 };
@@ -89,20 +95,40 @@ test('facebook and instagram prompts ask for comments, tiktok not; the comments 
 
 // Measured on the iPhone XR (Instagram, 11/2026): the box at y 555 above the keyboard,
 // "Publier un commentaire" on its row, and the Reel's share button (same id) behind the sheet.
-const box = { id: 'box', rect: { x: 72, y: 555, width: 268, height: 29 } };
+// Comment sheets on an iPhone XR (2x), French UI, 2026-11-28: empty (sheet
+// alone, then with the keyboard up) and with one letter typed.
+const fixture = (path: string) => readFile(new URL(`./fixtures/${path}.jpg`, import.meta.url));
 
-test('the text box is the lowest match in the lower part of the screen', () => {
-    const top = { id: 'top', rect: { x: 10, y: 60, width: 300, height: 30 } };
-    assert.equal(pickComposer([top, box], screen.height)?.id, 'box');
-    assert.equal(pickComposer([top], screen.height), undefined);
-});
+for (const [label, spec, shots] of [
+    ['Instagram', INSTAGRAM_COMMENT_SHEET, [['comment-sheet/instagram-empty', 837], ['keyboard/instagram-comment-upper', 570]]],
+    ['Facebook', FACEBOOK_COMMENT_SHEET, [['comment-sheet/facebook-empty', 836], ['keyboard/facebook-comment-lower', 569]]],
+] as const) {
+    test(`the empty ${label} text box is found by its placeholder, at the bottom or above the keyboard`, async () => {
+        for (const [shot, y] of shots) {
+            const box = findPlaceholder(await readSheetWords(await fixture(shot)), spec.placeholder, 2);
+            assert.ok(box, shot);
+            assert.ok(Math.abs(box.y + box.height / 2 - y) <= 6, `${shot}: ${JSON.stringify(box)}`);
+        }
+    });
 
-test('the send button is the one on the text box rows, never the Reel share button', () => {
-    const share = { id: 'share', rect: { x: 361, y: 565 - 120, width: 45, height: 44 } };
-    const publish = { id: 'publish', rect: { x: 340, y: 553, width: 50, height: 32 } };
-    assert.equal(pickSend([share, publish], box.rect)?.id, 'publish');
-    assert.equal(pickSend([share], box.rect), undefined);
-    // A long comment grows the box upwards; the button sits on its last row.
-    const tall = { x: 72, y: 500, width: 268, height: 84 };
-    assert.equal(pickSend([share, publish], tall)?.id, 'publish');
+    test(`no empty ${label} text box once text is typed`, async () => {
+        const typed = await fixture(`comment-sheet/${label.toLowerCase()}-typed`);
+        assert.equal(findPlaceholder(await readSheetWords(typed), spec.placeholder, 2), undefined);
+    });
+}
+
+const sendIn = async (path: string) => {
+    const { data, info } = await sharp(await fixture(path)).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const point = findSendButton(data, info.width, info.height, info.channels, 2);
+    return point && { x: Math.round(point.x / 2), y: Math.round(point.y / 2) };
+};
+
+test('the blue send button shows right of the box once text is typed, and only then', async () => {
+    const instagram = await sendIn('comment-sheet/instagram-typed');
+    assert.ok(instagram && Math.abs(instagram.x - 365) <= 4 && Math.abs(instagram.y - 570) <= 4, JSON.stringify(instagram));
+    const facebook = await sendIn('comment-sheet/facebook-typed');
+    assert.ok(facebook && Math.abs(facebook.x - 381) <= 4 && Math.abs(facebook.y - 570) <= 4, JSON.stringify(facebook));
+    for (const empty of ['comment-sheet/instagram-empty', 'comment-sheet/facebook-empty', 'keyboard/instagram-comment-upper', 'instagram-reels/reel-progress-17', 'instagram-reels/ad-light']) {
+        assert.equal(await sendIn(empty), undefined, empty);
+    }
 });

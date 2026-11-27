@@ -34,6 +34,8 @@ export interface ReelScreen {
     kind: ReelScreenKind;
     /** J'aime in the right-hand column, centre in points. Absent on 'other'. */
     like?: { x: number; y: number; liked: boolean };
+    /** The comment bubble under it, centre in points. Absent on 'other'. */
+    comment?: Point;
     /** Share of the video played, 0..1. Absent when the bar isn't on screen. */
     progress?: number;
     /** "Reel de <account>" — tells one Reel from the next. */
@@ -150,7 +152,7 @@ function redShare(pixels: Pixels, cx: number, cy: number, radius: number): numbe
  * Undefined when the rail isn't confidently on screen (cards, sheets,
  * pop-ups): never tap a guess.
  */
-export async function findLikeButton(pixels: Pixels, scale: number): Promise<{ x: number; y: number; liked: boolean; score: number } | undefined> {
+export async function findLikeButton(pixels: Pixels, scale: number): Promise<{ x: number; y: number; liked: boolean; score: number; comment: Point } | undefined> {
     const { width, height } = pixels;
     const image = edges(toGray(pixels.data, width, height, pixels.channels));
     const [heart, comment] = await Promise.all([loadTemplate(TEMPLATE_DIR, 'heart', scale), loadTemplate(TEMPLATE_DIR, 'comment', scale)]);
@@ -161,7 +163,10 @@ export async function findLikeButton(pixels: Pixels, scale: number): Promise<{ x
     const bottom = Math.round(bubble.y - COMMENT_GAP_PT.min * scale);
     const outline = bestMatch(image, heart, bubble.x - slack, bubble.x + slack, top, bottom, 2, true);
     if (outline.score >= MIN_RAIL_SCORE) {
-        return { x: outline.x, y: outline.y, liked: redShare(pixels, outline.x, outline.y, Math.round(6 * scale)) > 0.3, score: Math.min(outline.score, bubble.score) };
+        return {
+            x: outline.x, y: outline.y, liked: redShare(pixels, outline.x, outline.y, Math.round(6 * scale)) > 0.3,
+            score: Math.min(outline.score, bubble.score), comment: { x: bubble.x, y: bubble.y },
+        };
     }
     // Liked: a run of mostly red rows in the column, about the heart's height (~22 pt).
     let first = -1, last = -1;
@@ -173,7 +178,7 @@ export async function findLikeButton(pixels: Pixels, scale: number): Promise<{ x
     }
     const runPt = (last - first + 1) / scale;
     if (first < 0 || runPt < 10 || runPt > 30) return undefined;
-    return { x: bubble.x, y: Math.round((first + last) / 2), liked: true, score: bubble.score };
+    return { x: bubble.x, y: Math.round((first + last) / 2), liked: true, score: bubble.score, comment: { x: bubble.x, y: bubble.y } };
 }
 
 /**
@@ -234,7 +239,10 @@ export async function readReelScreenshot(screenshot: Buffer, scale: number): Pro
     return {
         onReels,
         kind,
-        ...(like ? { like: { x: Math.round(like.x / scale), y: Math.round(like.y / scale), liked: like.liked } } : {}),
+        ...(like ? {
+            like: { x: Math.round(like.x / scale), y: Math.round(like.y / scale), liked: like.liked },
+            comment: { x: Math.round(like.comment.x / scale), y: Math.round(like.comment.y / scale) },
+        } : {}),
         ...(progress !== undefined ? { progress } : {}),
         // A sheet or pop-up over the Reel has its own names in that band.
         ...(onReels && caption.account ? { reelId: `Reel de ${caption.account}` } : {}),

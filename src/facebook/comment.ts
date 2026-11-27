@@ -1,7 +1,8 @@
 // Facebook Reels' comment sheet, for the shared comment flow
 // (src/agent/comment-flow.ts). The comment bubble comes from the same
-// screenshot detection as the like button; the sheet's text box and its
-// "Publier" button (shown once text is typed) are found by id.
+// screenshot detection as the like button; the sheet is light, its empty
+// text box reads "Commentez…", and a blue paper plane shows right of it once
+// text is typed.
 
 import type { CommentSheetSpec } from '../agent/comment-flow.js';
 import { detectReelsControls } from './reels-controls.js';
@@ -12,8 +13,7 @@ export const FACEBOOK_COMMENT_SHEET: CommentSheetSpec = {
         const controls = await detectReelsControls(await context.screenshot(), context.scale);
         return controls?.comment;
     },
-    composerId: 'comment-composer-text-area',
-    sendId: 'comment-composer-confirm-button',
+    placeholder: /commentez|[ée]crivez un commentaire|write a comment|comment as/i,
     // The like/comment/share column is back in full: the sheet is gone.
     async onFeed(context) {
         return Boolean(await detectReelsControls(await context.screenshot(), context.scale));
