@@ -197,9 +197,10 @@ const remotes = new RegistryWdaRemoteControl();
 
 server.registerTool('type_text', {
     title: 'Type text on the phone',
-    description: 'Types text on the phone like a person: opens the keyboard if needed (taps the given point, else the first text field on screen), '
+    description: 'Types text on the phone like a person: opens the keyboard if needed (taps the given text field point; without one the keyboard must be open), '
         + 'then taps every key on the on-screen keyboard with human timing, switching to capitals/numbers/symbols as needed and '
-        + 'occasionally slipping onto a neighbouring key and correcting it. Works with any keyboard layout. '
+        + 'occasionally slipping onto a neighbouring key and correcting it. The keyboard is read off screenshots and must match a reference '
+        + 'keyboard (src/devices/keyboards/, made with npm run keyboard:calibrate); an unknown one is refused and saved to logs/keyboard-mismatch/. '
         + 'Letters that need a long-press (é on QWERTY…) are not supported. iOS autocorrect may still change words after a space.',
     inputSchema: {
         text: z.string().min(1).max(MAX_TYPING_LENGTH).describe('Text to type; \n presses return'),

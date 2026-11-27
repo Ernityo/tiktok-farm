@@ -1,8 +1,8 @@
 import { coordinatesForProfile } from './coordinates.js';
 import { humanSwipe, humanTap, pathFromActions, type PointerAction, type Random } from './humanize.js';
 import type { TouchEvent } from './touch-events.js';
-import { cachedKeyboard, MAX_TYPING_LENGTH, typeOnKeyboard, type KeyboardLayerCache, type TypingReport } from './typing.js';
-import { WdaKeyboard } from './wda-keyboard.js';
+import { ScreenKeyboard } from './screen-keyboard.js';
+import { MAX_TYPING_LENGTH, typeOnKeyboard, type TypingReport } from './typing.js';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 // IOHID consumer page / Power usage: the side (lock) button.
@@ -105,9 +105,6 @@ export interface RemoteControl {
 }
 
 export class RemoteDeviceError extends Error {}
-
-/** Keyboard layers read so far, per phone and keyboard position, for the life of the process. */
-const keyboardLayers = new Map<string, KeyboardLayerCache>();
 
 const HEADER_END = Buffer.from('\r\n\r\n');
 
@@ -425,8 +422,10 @@ export class WdaRemoteControl {
 
     /**
      * Types `text` on the phone like a person: opens the keyboard if needed,
-     * then taps every key with realistic rhythm. Reuses a running WDA session
-     * (an Appium one, say) or opens a short-lived one for the key lookups.
+     * then taps every key with realistic rhythm. The keyboard is read off
+     * screenshots and matched against reference keyboards (screen-keyboard.ts);
+     * one that matches none throws (KeyboardLayoutMismatch's message) before
+     * anything is typed on it.
      */
     async typeText(
         udid: string,
@@ -445,30 +444,54 @@ export class WdaRemoteControl {
             }
         }
         const onTap = options.onTouch ? (point: { x: number; y: number }) => options.onTouch?.({ type: 'tap', x: point.x, y: point.y }) : undefined;
-        const status = await (await this.request('/status')).json() as { sessionId?: string | null };
-        const sessionId = status.sessionId ?? await this.createSession();
         try {
-            const keyboard = new WdaKeyboard(
-                (pathname, init) => this.request(pathname, init),
-                sessionId,
-                (actions) => pointerSource(actions.map(withViewportOrigin)),
-            );
+            const { scale } = this.cachedScreenInfo ?? await this.getScreenInfo(udid);
+            const keyboard = new ScreenKeyboard({
+                // Full-resolution PNG: the references were made from these, and MJPEG frames are lossier.
+                screenshot: () => this.getScreenshot(udid),
+                scale,
+                perform: (actions) => this.performKeyActions(actions),
+                performSequence: (actions) => this.performKeySequence(actions),
+            });
             await keyboard.open(options.field, onTap);
-            // Same phone, same keyboard position: the layout is the same, so
-            // each layer is read in full (seconds on a busy app) only once.
-            const frame = await keyboard.frame();
-            const key = frame ? `${udid}|${frame.x},${frame.y},${frame.width},${frame.height}` : undefined;
-            let cache = key ? keyboardLayers.get(key) : undefined;
-            if (key && !cache) keyboardLayers.set(key, cache = { layers: [] });
-            const device = cache ? cachedKeyboard(keyboard, cache) : keyboard;
-            return await typeOnKeyboard(device, text, { wpm: options.wpm, typoRate: options.typoRate, onTap });
+            return await typeOnKeyboard(keyboard, text, { wpm: options.wpm, typoRate: options.typoRate, onTap });
         } catch (error) {
             if (error instanceof RemoteDeviceError) throw error;
             throw new RemoteDeviceError(errorMessage(error));
-        } finally {
-            if (!status.sessionId) await this.request(`/session/${sessionId}`, { method: 'DELETE' }).catch(() => {});
         }
     }
+
+    private async performKeyActions(actions: PointerAction[]): Promise<void> {
+        await this.request('/wda/absolute-actions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ actions: pointerSource(actions.map(withViewportOrigin)) }),
+        });
+    }
+
+    /**
+     * Several taps in one request on the patched route
+     * (Patches/appium-webdriveragent-8.9.1-tap-sequence.patch). False when
+     * this WDA build doesn't have it: never send a multi-tap to
+     * /wda/absolute-actions, which plays it as one swipe (swipe-typing).
+     */
+    private async performKeySequence(actions: PointerAction[]): Promise<boolean> {
+        if (this.noTapSequences) return false;
+        const response = await this.fetch(`${this.wdaUrl}/wda/absolute-tap-sequence`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ actions: pointerSource(actions.map(withViewportOrigin)) }),
+        });
+        if (response.status === 404) {
+            this.noTapSequences = true;
+            console.log('[typing] this WebDriverAgent has no tap-sequence route (run npm run wda:prepare); typing one key per request');
+            return false;
+        }
+        if (!response.ok) throw new Error(`Tap sequence failed: ${await response.text()}`);
+        return true;
+    }
+
+    private noTapSequences = false;
 
     async performAction(udid: string, action: RemoteAction, hooks: PerformActionHooks = {}): Promise<void> {
         this.assertTarget(udid);

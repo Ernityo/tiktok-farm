@@ -1,8 +1,9 @@
 // Human-like typing on the iPhone's on-screen keyboard: every character is a
 // real tap on its key, with the rhythm of a person typing with a thumb.
 //
-// The keyboard is read from the device (key labels + frames), never assumed,
-// so it works with any layout (QWERTY, AZERTY…) and any iPhone size. Layer
+// The keyboard is read from the device (key labels + frames, matched off a
+// screenshot: screen-keyboard.ts), never assumed, so it works with any
+// layout (QWERTY, AZERTY…) that has a reference. Layer
 // changes (shift, "123", "#+=") are found by position, which iOS keeps the
 // same in every language:
 //
@@ -77,9 +78,8 @@ export interface TypingReport {
 
 /**
  * Keyboard layers already read on one keyboard (same phone, same keyboard
- * frame). A full read costs a page-source request, seconds on a busy app;
- * the layout never changes, so later reads only confirm which known layer
- * is up with one key lookup.
+ * frame), for devices where a full read is slow: later reads only confirm
+ * which known layer is up with one key lookup.
  */
 export interface KeyboardLayerCache { layers: KeyboardKey[][] }
 

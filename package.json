@@ -47,6 +47,7 @@
     "agent:report": "node --import tsx src/agent/report.ts",
     "agent:frame-check": "node --env-file-if-exists=.env --env-file-if-exists=.env.devices --import tsx src/agent/frame-check.ts",
     "agent:mcp": "node --env-file-if-exists=.env --env-file-if-exists=.env.devices --import tsx src/agent/mcp.ts",
+    "keyboard:calibrate": "node --import tsx src/devices/keyboard-calibrate.ts",
     "detect:check": "node --env-file-if-exists=.env --env-file-if-exists=.env.devices --import tsx src/tiktok/detect-controls-check.ts"
   },
   "engines": {
