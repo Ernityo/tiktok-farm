@@ -66,6 +66,12 @@ const FRAME_QUALITY = envInteger('AGENT_FRAME_QUALITY', 80, 30, 100);
 /** WDA only captures while a client is connected; a high rate just shortens the wait for the next tick. */
 const FRAME_RATE = 30;
 const FRAME_TIMEOUT_MS = 2000;
+/**
+ * AGENT_FRAME_COMPARE=1 (with MJPEG frames): also take a /screenshot right
+ * after each video's frame and read it the same way, so the runner can judge
+ * both (src/agent/frame-compare.ts). Slows each video by the extra grab.
+ */
+const FRAME_COMPARE = process.env.AGENT_FRAME_COMPARE === '1' && FRAME_SOURCE === 'mjpeg';
 const CAPTION_MAX_CHARS = 400;
 const CAPTION_CROP_WIDTH = 640;
 /** Extra swipes when the feed did not move on (same video as before). */
@@ -248,6 +254,29 @@ export interface Observation {
     place: FeedPlace;
     /** Set when the session already knows to skip this video without asking the model (e.g. 'ad', 'shop', 'card', 'foreign'). */
     autoSkip?: string;
+    /** AGENT_FRAME_COMPARE: the same video read from both frame sources. */
+    compare?: FrameComparison;
+}
+
+/** What the code reads off one frame, for AGENT_FRAME_COMPARE. */
+export interface FrameReading {
+    image: Buffer;
+    captionImage: Buffer;
+    caption: string;
+    isAd: boolean;
+    noControls: boolean;
+    autoSkip?: string;
+    /** Size of the full frame, in KB. */
+    kb: number;
+}
+
+export interface FrameComparison {
+    /** Where the run writes compare.jsonl. */
+    directory: string;
+    /** The MJPEG frame the session acts on. */
+    mjpeg: FrameReading;
+    /** /screenshot (PNG), taken right after it. */
+    png: FrameReading & { grabMs: number };
 }
 
 /** A fresh frame with what the model needs, before the OCR and the code-side checks (see `onFrame`). */
@@ -534,7 +563,7 @@ export class AgentSession {
             const lengthMs = sessionLengthMs(options.minutes);
             await writeFile(path.join(logDirectory, 'session.json'), JSON.stringify({
                 app: adapter.app, udid: device.udid, account, niche, personality: options.personality, minutes: options.minutes,
-                frames: FRAME_SOURCE === 'mjpeg' ? { source: FRAME_SOURCE, quality: FRAME_QUALITY } : { source: FRAME_SOURCE },
+                frames: FRAME_SOURCE === 'mjpeg' ? { source: FRAME_SOURCE, quality: FRAME_QUALITY, ...(FRAME_COMPARE ? { compare: true } : {}) } : { source: FRAME_SOURCE },
                 goal: options.goal ?? 'niche',
                 ...(options.follows ? { follows: options.follows } : {}),
                 ...(options.search ? { search: options.search } : {}),
@@ -620,6 +649,31 @@ export class AgentSession {
         return { screenshot, words: captionWords, image, captionImage, inspection: inspected, caption, marks };
     }
 
+    /** AGENT_FRAME_COMPARE: a /screenshot of the same video, read exactly like the MJPEG frame. */
+    private async compareFrame(stem: string, mjpeg: FrameReading): Promise<FrameComparison> {
+        const start = Date.now();
+        const screenshot = await this.context.remoteControl.getScreenshot(this.context.device.udid);
+        const grabMs = Date.now() - start;
+        const [image, captionImage, words, inspection] = await Promise.all([
+            sharp(screenshot).resize({ width: IMAGE_WIDTH }).jpeg({ quality: IMAGE_QUALITY }).toBuffer(),
+            this.captionCrop(screenshot),
+            readCaptionWords(screenshot).catch((): OcrWord[] => []),
+            this.adapter.inspect?.(this.context, screenshot) ?? Promise.resolve<VideoInspection>({ isAd: false }),
+        ]);
+        const caption = words.map((word) => word.text).join(' ').slice(0, CAPTION_MAX_CHARS);
+        const isAd = inspection.isAd || adFromWords(words).isAd;
+        const autoSkip = autoSkipReason({ isAd, caption }) ?? inspection.autoSkip;
+        await writeFile(`${stem}-png.jpg`, image).catch(() => undefined);
+        return {
+            directory: this.logDirectory,
+            mjpeg,
+            png: {
+                image, captionImage, caption, isAd, noControls: Boolean(inspection.noControls), kb: Math.round(screenshot.length / 1024), grabMs,
+                ...(autoSkip ? { autoSkip } : {}),
+            },
+        };
+    }
+
     /** Likes/saves/comments/follows done, and what the rate allows if this video gets one. */
     private engagementFor(judgedIncludingThis: number): Observation['engagement'] {
         const profile = PROFILES[this.personality];
@@ -672,10 +726,20 @@ export class AgentSession {
             writeFile(`${stem}-caption.jpg`, captionImage).catch(() => undefined),
         ]);
         const autoSkip = autoSkipReason({ isAd, caption }) ?? inspection.autoSkip;
+        const compare = FRAME_COMPARE
+            ? await this.compareFrame(stem, {
+                image, captionImage, caption, isAd, noControls: Boolean(inspection.noControls), kb: Math.round(screenshot.length / 1024),
+                ...(autoSkip ? { autoSkip } : {}),
+            }).catch((error: unknown) => {
+                console.warn(`[agent] frame comparison failed: ${error instanceof Error ? error.message : String(error)}`);
+                return undefined;
+            })
+            : undefined;
         return {
             video: this.videos, image, captionImage, caption, isAd, remainingMs: this.remainingMs, place: this.place,
             engagement: this.engagementFor(this.decisionMs.length + 1),
             ...(autoSkip ? { autoSkip } : {}),
+            ...(compare ? { compare } : {}),
         };
     }
 

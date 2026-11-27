@@ -6,6 +6,7 @@
 // the images only, no OCR text: build its prompt with `noOcrText`.
 // AGENT_EARLY_DECIDE=0 waits for the OCR and the checks first (the old order).
 
+import { FrameComparer } from './frame-compare.js';
 import type { DecisionInput, ModelDecision, OpenRouterDecider } from './model.js';
 import type { AgentPlan } from './plan.js';
 import type { AgentSession, Frame, Observation, SessionSummary, StepTrace } from './session.js';
@@ -55,6 +56,8 @@ export async function runSession(
 ): Promise<{ summary: SessionSummary; error?: unknown }> {
     let observation = first;
     let failures = 0;
+    // AGENT_FRAME_COMPARE: observations carry both frame sources.
+    const comparer = new FrameComparer(decider, log);
     // The call started on the latest frame, if any (a retried swipe replaces it).
     let early: { image: Buffer; decision: ReturnType<typeof timedDecide> } | undefined;
     if (earlyDecideEnabled()) {
@@ -93,6 +96,7 @@ export async function runSession(
                 }
             }
             const where = observation.place === 'search' ? ' [search]' : '';
+            comparer.add(observation, skipReason || extra.auto ? undefined : plan);
             log(`#${String(observation.video).padStart(3)}${where} ${describePlan(plan)}  ${skipReason ? `(auto: ${skipReason})` : `(${String(extra.modelMs)} ms${extra.foreign ? ', not in language' : ''})`}  ${observation.caption.slice(0, 70)}`);
             const result = await session.step(plan, extra, trace);
             if ('summary' in result) return { summary: result.summary };
@@ -102,5 +106,6 @@ export async function runSession(
         return { summary: await session.stop('error'), error };
     } finally {
         session.onFrame(undefined);
+        await comparer.finish();
     }
 }
