@@ -2,8 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-import { bottomBarFromWords, findCreatorName, readProfileScreen } from '../src/tiktok/creator-profile.js';
-import type { SourceNode } from '../src/instagram/reels-screen.js';
+import { bottomBarFromWords, findCreatorName, profileHeaderFromWords, readProfileScreenshot } from '../src/tiktok/creator-profile.js';
 import type { OcrWord } from '../src/tiktok/ocr.js';
 
 // Name lines measured on the fixtures (points, iPhone XR at 2×).
@@ -30,53 +29,40 @@ test('the bottom bar tells the feed, the profile player and other screens apart'
     assert.equal(bottomBarFromWords([]), 'other');
 });
 
-const node = (type: string, props: Partial<SourceNode>, rect: [number, number, number, number]): SourceNode => ({
-    type, ...props, rect: { x: rect[0] - rect[2] / 2, y: rect[1] - rect[3] / 2, width: rect[2], height: rect[3] },
-});
+// Real profile screenshots (MCP looks: 500 px wide, so 500/414 px a point).
+const profileShot = (name: string) => readFile(new URL(`./fixtures/tiktok-profile/${name}`, import.meta.url));
+const LOOK_SCALE = 500 / 414;
 
-// Trimmed from the real profile tree (centres and sizes as phone_look printed them).
-function profileTree(followed: boolean): SourceNode {
-    const tiles = followed ? 719 : 484;
-    return {
-        type: 'Application', children: [
-            node('Button', { name: 'nav_bar_start_back', label: 'IconChevronLeftLTR' }, [29, 70, 42, 44]),
-            node('Other', { name: 'user_account_user_name', label: '@histoiresfruitees_' }, [73, 146, 114, 16]),
-            {
-                ...node('Other', { name: 'cta_social_interaction' }, followed ? [138, 238, 243, 40] : [183, 238, 334, 40]),
-                children: [followed ? node('Button', { label: 'Message' }, [138, 238, 243, 40]) : node('Button', { label: 'Suivre' }, [159, 238, 286, 40])],
-            },
-            ...(followed
-                ? [
-                    node('Button', { name: 'cta_settings_button', label: 'Gérer le profil' }, [309, 238, 83, 40]),
-                    // Suggested accounts: their Suivre buttons are not the creator's.
-                    node('Button', { label: 'Suivre' }, [90, 465, 124, 32]),
-                    node('Button', { label: 'Suivre' }, [242, 465, 124, 32]),
-                ]
-                : []),
-            node('Button', { label: '#histoire #fruitstory #ai . Vidéo. 297 vues.' }, [69, tiles, 137, 182]),
-            node('Button', { label: 'Partie 2 | #histoire . Vidéo. 2345 vues.' }, [207, tiles, 138, 182]),
-            node('Button', { label: 'Partie 3 | #histoire . Vidéo. 4443 vues.' }, [207, 850, 138, 182]),
-        ],
-    };
-}
-
-test('the profile shows its own Suivre button and the tiles fully on screen', () => {
-    const profile = readProfileScreen(profileTree(false), 896);
-    assert.ok(profile);
-    assert.equal(profile.handle, '@histoiresfruitees_');
-    assert.deepEqual(profile.follow, { x: 159, y: 238 });
+test('a profile not yet followed: its own Suivre button and the first row of tiles', async () => {
+    const profile = await readProfileScreenshot(await profileShot('profile-not-following.jpg'), LOOK_SCALE);
+    assert.ok(profile, 'not read as a profile');
     assert.equal(profile.following, false);
-    assert.deepEqual(profile.back, { x: 29, y: 70 });
-    // The 850 row runs off the bottom of the screen.
-    assert.deepEqual(profile.videos, [{ x: 69, y: 484 }, { x: 207, y: 484 }]);
+    assert.ok(profile.follow, 'no Suivre button');
+    // Measured: the pill is centred at (159, 238) points.
+    assert.ok(Math.abs(profile.follow.x - 159) <= 15 && Math.abs(profile.follow.y - 238) <= 6, JSON.stringify(profile.follow));
+    assert.equal(profile.videos.length, 3);
+    assert.ok(Math.abs(profile.videos[0]!.y - 484) <= 15, JSON.stringify(profile.videos));
 });
 
-test('after following, suggested accounts\' Suivre buttons are ignored', () => {
-    const profile = readProfileScreen(profileTree(true), 896)!;
+test('a followed profile: Message instead of Suivre, the suggested accounts\' buttons ignored', async () => {
+    const profile = await readProfileScreenshot(await profileShot('profile-following.jpg'), LOOK_SCALE);
+    assert.ok(profile, 'not read as a profile');
     assert.equal(profile.follow, undefined);
     assert.equal(profile.following, true);
+    // The grid moved below the suggested accounts (centre ~719 points).
+    if (profile.videos.length) assert.ok(Math.abs(profile.videos[0]!.y - 719) <= 15, JSON.stringify(profile.videos));
 });
 
-test('a screen without a creator handle is not a profile', () => {
-    assert.equal(readProfileScreen({ type: 'Application', children: [node('Button', { label: 'Suivre' }, [159, 238, 286, 40])] }, 896), undefined);
+for (const name of ['post-normal-1.png', 'follow-back-card.png', 'live-preview.png']) {
+    test(`a feed screen is not a profile: ${name}`, async () => {
+        const buffer = await readFile(new URL(`./fixtures/tiktok-ads/${name}`, import.meta.url));
+        assert.equal(await readProfileScreenshot(buffer, 2), undefined);
+    });
+}
+
+test('the header words: the stats row makes a profile, Message means following', () => {
+    const read = profileHeaderFromWords(['@histoiresfruitees_', '13', 'Suivis', '20,7', 'K', 'Followers', "J'aime"].map(word));
+    assert.deepEqual(read, { profile: true, handle: '@histoiresfruitees_', following: false });
+    assert.equal(profileHeaderFromWords(['Message', 'Suivis', 'Followers'].map(word)).following, true);
+    assert.equal(profileHeaderFromWords(['Suivis', 'Pour', 'toi'].map(word)).profile, false);
 });

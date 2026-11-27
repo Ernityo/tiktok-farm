@@ -4,24 +4,24 @@
 //   Feed: tapping the creator's name (the bold first line of the caption,
 //   bottom left) opens their profile. The avatar is avoided: a ring around it
 //   (a story) can open the story instead.
-//   Profile: its accessibility tree reads fine. The big "Suivre" button sits
-//   in `cta_social_interaction`; after following it becomes "Message" plus a
-//   "Suivis ▾" button (`cta_settings_button`). Following can open a "Comptes
-//   suggérés" strip with its own "Suivre" buttons: never tap those. Video
-//   tiles are Buttons labelled "… Vidéo. N vues.".
+//   Profile: read off screenshots only. Its accessibility tree often took
+//   over 6-15 s and could hang WDA (and the app with it), so it isn't used.
+//   The stats row ("Suivis · Followers · J'aime") says it's a profile; the
+//   big red "Suivre" pill spans most of the width; after following it becomes
+//   "Message" plus "Suivis ▾". Following can open a "Comptes suggérés" strip
+//   with its own (narrow) "Suivre" buttons: never tap those. The video grid
+//   starts below, three tiles a row.
 //   A tile opens a player (its page source hangs, like the feed) with "<" at
 //   the top left; a quick swipe up shows the creator's next video.
 //   Back: player "<" → profile; profile `nav_bar_start_back` → feed. The app
 //   lags here: a screenshot can still show the profile after going back, and
 //   the feed's LIVE button sits exactly where the profile's back arrow was.
-//   So every back tap is guarded by reading the tree first.
+//   So every back tap is guarded by a fresh screenshot of the profile.
 
 import sharp from 'sharp';
 
 import { AppStuckError } from '../agent/comment.js';
-import { readSource } from '../agent/page-source.js';
 import type { AppContext } from '../agent/session.js';
-import type { SourceNode } from '../instagram/reels-screen.js';
 import { tapCoordinate } from './actions.js';
 import { recognizeWords, type OcrWord } from './ocr.js';
 
@@ -103,77 +103,156 @@ export async function findCreatorName(screenshot: Buffer, scale: number): Promis
     };
 }
 
-const clean = (text: string | null | undefined) => (text ?? '').replace(/[  ‎⁨⁩]/g, ' ').trim();
-const isVisible = (node: SourceNode) => node.isVisible === undefined || node.isVisible === true || node.isVisible === '1';
-const isButton = (node: SourceNode) => node.type === 'Button' || node.type === 'XCUIElementTypeButton';
-
-function all(root: SourceNode, match: (node: SourceNode) => boolean): SourceNode[] {
-    const found: SourceNode[] = [];
-    const stack = [root];
-    while (stack.length) {
-        const node = stack.pop()!;
-        if (match(node) && isVisible(node)) found.push(node);
-        for (const child of [...(node.children ?? [])].reverse()) stack.push(child);
-    }
-    return found;
-}
-
-function centre(node: SourceNode): Point | undefined {
-    const rect = node.rect;
-    if (!rect || rect.width <= 0 || rect.height <= 0) return undefined;
-    return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) };
-}
-
-function inside(point: Point, node: SourceNode | undefined): boolean {
-    const rect = node?.rect;
-    return Boolean(rect && point.x >= rect.x && point.x <= rect.x + rect.width && point.y >= rect.y && point.y <= rect.y + rect.height);
-}
-
 export interface ProfileScreen {
-    handle: string;
-    /** The big Follow button (never a suggested account's). */
+    /** The @handle under the name, when OCR read it (for messages only). */
+    handle?: string;
+    /** The big red Follow button (never a suggested account's: those are a third as wide). */
     follow?: Point;
-    /** "Message" / "Suivis ▾" show: this account already follows the creator. */
+    /** "Message" shows where Suivre was: this account already follows the creator. */
     following: boolean;
-    back?: Point;
-    /** Video tiles fully on screen, top to bottom. */
+    /** Centres of the first row of video tiles, when that row is fully on screen. */
     videos: Point[];
 }
 
-/** Reads a creator's profile from its accessibility tree, or undefined when it isn't one. */
-export function readProfileScreen(root: SourceNode, screenHeight: number): ProfileScreen | undefined {
-    const handleNode = all(root, (n) => n.name === 'user_account_user_name')[0];
-    const handle = clean(handleNode?.label ?? handleNode?.value);
-    if (!handle) return undefined;
-    const cta = all(root, (n) => n.name === 'cta_social_interaction')[0];
-    const followNode = all(root, (n) => isButton(n) && /^(Suivre|Follow)$/i.test(clean(n.label)))
-        .find((n) => { const point = centre(n); return point !== undefined && inside(point, cta); });
-    const following = all(root, (n) => n.name === 'cta_settings_button' || (isButton(n) && /^Message$/i.test(clean(n.label))))
-        .some((n) => { const point = centre(n); return point !== undefined && (!cta || inside(point, cta) || n.name === 'cta_settings_button'); });
-    const backNode = all(root, (n) => n.name === 'nav_bar_start_back')[0];
-    const videos = all(root, (n) => isButton(n) && /Vid[ée]o\. [\d\s.,]+ (vues|views)\.?$/i.test(clean(n.label)))
-        .filter((n) => n.rect && n.rect.y >= 0 && n.rect.y + n.rect.height <= screenHeight - 90)
-        .map(centre).filter((point): point is Point => point !== undefined)
-        .sort((a, b) => a.y - b.y || a.x - b.x);
-    const follow = followNode && centre(followNode);
-    const back = backNode && centre(backNode);
+/** The profile's "<", top left (points). The feed's LIVE button sits in the same spot: only tap it on a profile. */
+export const PROFILE_BACK: Point = { x: 29, y: 70 };
+
+/** The header OCR'd for the stats row, handle and "Message": shares of the screen (the avatar on the right is left out). */
+const HEADER_REGION = { top: 0.1, height: 0.24, width: 0.72 } as const;
+/** Where the big Follow button is looked for. */
+const FOLLOW_BAND = { top: 0.18, bottom: 0.45 } as const;
+/** The main Follow button spans most of the width; the suggested accounts' are under a third. */
+const FOLLOW_MIN_WIDTH_SHARE = 0.45;
+/** Widest white gap inside the button (between letters); the suggested cards sit ~7% apart. */
+const MAX_LETTER_GAP_SHARE = 0.03;
+/** A video tile's height over its width (measured: 218 px over 166 px). */
+const TILE_ASPECT = 1.31;
+
+const normalised = (text: string) => text.toLowerCase().replace(/[^a-zà-ÿ@]/g, '');
+
+/** What the header's OCR words say: a profile has the stats row ("Followers" plus "Suivis" or "J'aime"). */
+export function profileHeaderFromWords(words: readonly OcrWord[]): { profile: boolean; handle?: string; following: boolean } {
+    const texts = words.map((word) => normalised(word.text));
+    const followers = texts.some((text) => /^(followers|abonn[ée]s)$/.test(text));
+    const other = texts.some((text) => /^(suivis?|following|jaime|likes)$/.test(text));
+    const handleWord = words.find((word) => /^@[\w.]{2,}/.test(word.text.trim()));
     return {
-        handle: handle.startsWith('@') ? handle : `@${handle}`,
-        ...(follow ? { follow } : {}), following, ...(back ? { back } : {}), videos,
+        profile: followers && other,
+        ...(handleWord ? { handle: handleWord.text.trim() } : {}),
+        following: texts.some((text) => text === 'message'),
+    };
+}
+
+/** Dark text only (as black on white): the profile's labels on its white background. */
+async function darkText(image: Buffer, threshold = 185): Promise<Buffer> {
+    const { data, info } = await sharp(image).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const mask = Buffer.alloc(info.width * info.height);
+    for (let index = 0; index < mask.length; index++) {
+        const offset = index * info.channels;
+        mask[index] = Math.max(data[offset]!, data[offset + 1]!, data[offset + 2]!) < threshold ? 0 : 255;
+    }
+    // Small screenshots (MCP looks) read better doubled.
+    const scaleUp = info.width < 600 ? 2 : 1;
+    return sharp(mask, { raw: { width: info.width, height: info.height, channels: 1 } })
+        .resize(info.width * scaleUp, info.height * scaleUp).withMetadata({ density: 300 }).png().toBuffer();
+}
+
+const isRed = (r: number, g: number, b: number) => r > 200 && g < 100 && b < 140 && r - g > 120;
+const isBusy = (r: number, g: number, b: number) => {
+    const max = Math.max(r, g, b);
+    return 0.299 * r + 0.587 * g + 0.114 * b < 200 || max - Math.min(r, g, b) > 60;
+};
+
+/**
+ * The big red Follow button in raw pixels: the topmost rows in the band whose
+ * longest red run spans most of the width. Pixel coordinates, or undefined.
+ */
+export function findFollowButton(data: Buffer, width: number, height: number, channels: number): Point | undefined {
+    const rows: { y: number; x: number }[] = [];
+    for (let y = Math.round(height * FOLLOW_BAND.top); y < Math.round(height * FOLLOW_BAND.bottom); y++) {
+        // A run bridges short gaps (the white "Suivre" letters), not the gaps between suggested accounts' cards.
+        const maxGap = Math.round(width * MAX_LETTER_GAP_SHARE);
+        let best = 0, bestEnd = 0, runStart = -1, lastRed = -1;
+        for (let x = 0; x < width; x++) {
+            const offset = (y * width + x) * channels;
+            if (!isRed(data[offset]!, data[offset + 1]!, data[offset + 2]!)) continue;
+            if (runStart < 0 || x - lastRed > maxGap) runStart = x;
+            lastRed = x;
+            if (x - runStart + 1 > best) { best = x - runStart + 1; bestEnd = x; }
+        }
+        if (best < width * FOLLOW_MIN_WIDTH_SHARE) continue;
+        // Rows through the letters can fall short: a gap of a few rows still belongs to the same button.
+        if (rows.length && y - rows.at(-1)!.y > height * 0.015) break;
+        rows.push({ y, x: bestEnd - best / 2 });
+    }
+    if (rows.length < 4) return undefined;
+    const middle = rows[Math.floor(rows.length / 2)]!;
+    return { x: Math.round(middle.x), y: Math.round((rows[0]!.y + rows.at(-1)!.y) / 2) };
+}
+
+/**
+ * The top of the video grid in raw pixels: the first point below `fromY`
+ * where a tile's worth of rows are almost all image (the bio and the
+ * suggested accounts are mostly white or light grey).
+ */
+export function findGridTop(data: Buffer, width: number, height: number, channels: number, fromY: number, minRows: number): number | undefined {
+    const busy: number[] = [];
+    for (let y = 0; y < height; y++) {
+        if (y < fromY) { busy.push(0); continue; }
+        let count = 0;
+        for (let x = 0; x < width; x += 2) {
+            const offset = (y * width + x) * channels;
+            if (isBusy(data[offset]!, data[offset + 1]!, data[offset + 2]!)) count++;
+        }
+        busy.push(count / Math.ceil(width / 2));
+    }
+    for (let y = fromY; y + minRows < height; y++) {
+        let full = 0;
+        for (let row = y; row < y + minRows; row++) if (busy[row]! > 0.8) full++;
+        if (full >= minRows * 0.9) return y;
+    }
+    return undefined;
+}
+
+/** Reads a creator's profile off a screenshot (light mode), or undefined when it isn't one. Points. */
+export async function readProfileScreenshot(screenshot: Buffer, scale: number): Promise<ProfileScreen | undefined> {
+    const { data, info } = await sharp(screenshot).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const { width, height, channels } = info;
+    const header = await sharp(data, { raw: { width, height, channels } }).extract({
+        left: 0, top: Math.round(height * HEADER_REGION.top), width: Math.round(width * HEADER_REGION.width), height: Math.round(height * HEADER_REGION.height),
+    }).png().toBuffer();
+    const read = profileHeaderFromWords(await recognizeWords(await darkText(header)));
+    if (!read.profile) return undefined;
+
+    const button = findFollowButton(data, width, height, channels);
+    const following = !button && read.following;
+    // The grid starts below the button row (or below where it would be).
+    const fromY = Math.round(button ? button.y + height * 0.04 : height * 0.3);
+    const tileHeight = (width / 3) * TILE_ASPECT;
+    const gridTop = findGridTop(data, width, height, channels, fromY, Math.round(tileHeight * 0.3));
+    const videos: Point[] = [];
+    if (gridTop !== undefined && gridTop + tileHeight <= height - 80 * scale) {
+        for (const column of [1, 3, 5]) {
+            videos.push({ x: Math.round((width * column) / 6 / scale), y: Math.round((gridTop + tileHeight / 2) / scale) });
+        }
+    }
+    return {
+        ...(read.handle ? { handle: read.handle } : {}),
+        ...(button ? { follow: { x: Math.round(button.x / scale), y: Math.round(button.y / scale) } } : {}),
+        following, videos,
     };
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const between = (min: number, max: number) => Math.round(min + Math.random() * (max - min));
 
-/** The profile, read again until it shows (or the time runs out). Undefined = not on a profile (or the tree hangs). */
+/** The profile, read off screenshots until it shows (or the time runs out). Undefined = not on a profile. */
 async function waitForProfile(context: AppContext, timeoutMs: number): Promise<ProfileScreen | undefined> {
     const until = Date.now() + timeoutMs;
     do {
-        const tree = await readSource(context, 6000).catch(() => undefined);
-        const profile = tree && readProfileScreen(tree, context.window.height);
+        const profile = await readProfileScreenshot(await context.screenshot(), context.scale).catch(() => undefined);
         if (profile) return profile;
-        await sleep(700);
+        await sleep(500);
     } while (Date.now() < until);
     return undefined;
 }
@@ -213,12 +292,15 @@ export async function followFromProfile(context: AppContext, deps: ProfileFollow
     try {
         // A look at the profile first, like a person deciding.
         await sleep(between(1200, 3000));
-        if (profile.following) throw new Error(`already following ${profile.handle}`);
-        if (!profile.follow) throw new Error(`no Suivre button on ${profile.handle}'s profile`);
+        const who = profile.handle ?? 'the creator';
+        if (profile.following) throw new Error(`already following ${who}`);
+        if (!profile.follow) throw new Error(`no Suivre button on ${who}'s profile`);
         await tapCoordinate(context.driver, profile.follow.x, profile.follow.y, 'Suivre', { radius: 6 });
         await sleep(1500);
-        profile = (await waitForProfile(context, 4000)) ?? profile;
-        verified = profile.following;
+        const after = await waitForProfile(context, 4000);
+        verified = Boolean(after?.following);
+        // Following moves the grid down (a "Comptes suggérés" strip opens above it).
+        if (after) profile = after;
 
         // One or two of their videos.
         const tile = profile.videos.slice(0, 3)[Math.floor(Math.random() * Math.min(3, profile.videos.length))];
@@ -246,16 +328,20 @@ export async function followFromProfile(context: AppContext, deps: ProfileFollow
 }
 
 /**
- * From the profile back to the feed. The back arrow is only tapped when the
- * tree shows it (the feed's LIVE button is in the same spot); the feed is
- * confirmed by its rail.
+ * From the profile back to the feed. The "<" is only tapped while a fresh
+ * screenshot shows the profile (the feed's LIVE button is in the same spot),
+ * and a second tap waits for the profile to show twice: the app lags here.
+ * The feed is confirmed by its tab bar and rail.
  */
 async function backToFeed(context: AppContext, deps: ProfileFollowDeps): Promise<void> {
     for (let attempt = 1; attempt <= 3; attempt++) {
-        const profile = await waitForProfile(context, 3000);
-        if (!profile) break;
-        if (!profile.back) throw new AppStuckError(`No back button on ${profile.handle}'s profile`);
-        await tapCoordinate(context.driver, profile.back.x, profile.back.y, `Profile back (attempt ${attempt})`, { radius: 4 });
+        if (await onFeed(context, deps)) return;
+        if (!(await readProfileScreenshot(await context.screenshot(), context.scale).catch(() => undefined))) break;
+        if (attempt > 1) {
+            await sleep(1000);
+            if (!(await readProfileScreenshot(await context.screenshot(), context.scale).catch(() => undefined))) break;
+        }
+        await tapCoordinate(context.driver, PROFILE_BACK.x, PROFILE_BACK.y, `Profile back (attempt ${attempt})`, { radius: 4 });
         await sleep(2000);
     }
     for (let check = 0; check < 3; check++) {
