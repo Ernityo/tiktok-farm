@@ -1,7 +1,7 @@
 // Instagram Reels for the agentic doomscroll (src/agent/session.ts).
-// Read from the accessibility tree, like the programmatic Reels doomscroll:
-// the Reels tab, J'aime and whether it is pressed, "Sponsorisée", the video
-// progress, and which Reel is on screen. Comments go through the comment
+// Read off screenshots (reels-screen.ts), like the programmatic Reels
+// doomscroll: the Reels tab, J'aime and whether it is pressed, "Sponsorisée",
+// the video progress, and which Reel is on screen. Comments go through the comment
 // sheet (src/instagram/comment.ts).
 
 import type { AgentAppAdapter, AppContext } from '../agent/session.js';
@@ -9,14 +9,10 @@ import { leaveComment } from '../agent/comment-flow.js';
 import { INSTAGRAM_PLUGIN_ID } from '../instagram-plugin.js';
 import { INSTAGRAM_COMMENT_SHEET } from './comment.js';
 import { swipeCoordinates, tapCoordinate } from '../tiktok/actions.js';
-import { findReelsTab, parseSource, readReelScreen, type ReelScreen, type SourceNode } from './reels-screen.js';
+import { readReelScreenshot, reelsTabPoint, type ReelScreen } from './reels-screen.js';
 
-async function readTree(context: AppContext): Promise<SourceNode> {
-    return parseSource(await context.driver.execute('mobile: source', { format: 'json' }));
-}
-
-async function readScreen(context: AppContext): Promise<ReelScreen> {
-    return readReelScreen(await readTree(context));
+async function readScreen(context: AppContext, screenshot?: Buffer): Promise<ReelScreen> {
+    return readReelScreenshot(screenshot ?? await context.screenshot(), context.scale);
 }
 
 export const instagramAdapter: AgentAppAdapter = {
@@ -32,8 +28,7 @@ export const instagramAdapter: AgentAppAdapter = {
     minSwipeTravel: 110,
 
     async openFeed(context) {
-        const tab = findReelsTab(await readTree(context));
-        if (!tab) throw new Error('Could not find the Instagram Reels tab (is Instagram logged in?)');
+        const tab = reelsTabPoint(context.window);
         await tapCoordinate(context.driver, tab.x, tab.y, 'Reels tab', { radius: 6 });
         await context.driver.pause(3000);
         // The first screen can be a card: allow a few swipes to find a Reel.
@@ -49,8 +44,8 @@ export const instagramAdapter: AgentAppAdapter = {
         throw new Error('Could not confirm the Instagram Reels screen (no Reel with a J\'aime button found)');
     },
 
-    async inspect(context) {
-        const screen = await readScreen(context).catch(() => undefined);
+    async inspect(context, screenshot) {
+        const screen = await readScreen(context, screenshot).catch(() => undefined);
         if (!screen || !screen.onReels || screen.kind === 'other') return { isAd: false, autoSkip: 'card' };
         return { isAd: screen.kind === 'ad', ...(screen.reelId ? { reelId: screen.reelId } : {}) };
     },

@@ -17,7 +17,7 @@ import {
     pickWatchDurationMs,
 } from '../tiktok/doomscroll-profile.js';
 import { ReelWatchTracker } from '../facebook/reels-progress.js';
-import { findReelsTab, parseSource, readReelScreen, type ReelScreen, type SourceNode } from './reels-screen.js';
+import { readReelScreenshot, reelsTabPoint, type ReelScreen } from './reels-screen.js';
 
 function positiveInteger(name: string, fallback: number): number {
     const rawValue = process.env[name] ?? String(fallback);
@@ -64,8 +64,8 @@ const instagramBundleId = process.env.INSTAGRAM_BUNDLE_ID ?? 'com.burbn.instagra
 const wdaUrl = process.env.WDA_URL;
 
 // Only the passcode keypad comes from the coordinate profile: everything on
-// Instagram is located through the accessibility tree, and the swipe is
-// scaled to the screen, so any device works.
+// Instagram is read off screenshots (reels-screen.ts), and the swipe is
+// scaled to the screen.
 const registeredDevice = (await loadRegisteredDevices()).find((device) => device.udid === udid);
 const coordinates = resolveDeviceCoordinates(coordinateProfile(registeredDevice), registeredDevice?.coordinates);
 // Thumb-side swipe style (default right-thumb); undefined means the fixed swipe.
@@ -166,7 +166,6 @@ try {
         hostname: process.env.APPIUM_HOST ?? '127.0.0.1',
         port: positiveInteger('APPIUM_PORT', 4725),
         path: '/',
-        // 'info' would print the whole accessibility tree after every read.
         logLevel: 'warn',
         connectionRetryCount: 0,
         connectionRetryTimeout: 180000,
@@ -175,42 +174,39 @@ try {
     await driver.updateSettings({ defaultActiveApplication: instagramBundleId });
     await driver.pause(4000);
     const window = await driver.getWindowRect();
+    const { scale } = await remoteControl.getScreenInfo(udid);
 
-    // Debug mode (DOOMSCROLL_DEBUG_DIR=<folder>): saves a screenshot and the
-    // accessibility tree of every screen the script reads, plus a screenshot
-    // after each like and swipe.
+    // Debug mode (DOOMSCROLL_DEBUG_DIR=<folder>): saves every screenshot the
+    // script reads, with what was read off it, plus a screenshot after each
+    // like and swipe.
     const debugDir = process.env.DOOMSCROLL_DEBUG_DIR ? path.resolve(process.env.DOOMSCROLL_DEBUG_DIR) : undefined;
     let debugSequence = 0;
-    const debugShot = async (label: string, tree?: SourceNode, settleMs = 0): Promise<void> => {
+    const debugShot = async (label: string, read?: { screenshot: Buffer; screen: ReelScreen }, settleMs = 0): Promise<void> => {
         if (!debugDir) return;
         try {
             if (settleMs) await driver!.pause(settleMs);
             await mkdir(debugDir, { recursive: true });
             debugSequence += 1;
             const base = path.join(debugDir, `${String(debugSequence).padStart(3, '0')}-reel${reelsViewed}-${label}`);
-            await writeFile(`${base}.png`, await remoteControl.getScreenshot(udid));
-            if (tree) await writeFile(`${base}.json`, JSON.stringify(tree));
+            await writeFile(`${base}.png`, read?.screenshot ?? await remoteControl.getScreenshot(udid));
+            if (read) await writeFile(`${base}.json`, JSON.stringify(read.screen));
             console.log(`[debug] screenshot ${base}.png`);
         } catch (error) {
             console.log(`[debug] screenshot failed: ${error instanceof Error ? error.message : String(error)}`);
         }
     };
 
-    const readTree = async (): Promise<SourceNode | undefined> => {
+    /** Undefined when the screen couldn't be read: never tap on that. */
+    const readScreen = async (label: string): Promise<ReelScreen | undefined> => {
         try {
-            return parseSource(await driver!.execute('mobile: source', { format: 'json' }));
+            const screenshot = await remoteControl.getScreenshot(udid);
+            const screen = await readReelScreenshot(screenshot, scale);
+            await debugShot(label, { screenshot, screen });
+            return screen;
         } catch (error) {
             console.log(`Reading the screen failed: ${error instanceof Error ? error.message : String(error)}`);
             return undefined;
         }
-    };
-
-    /** Undefined when the screen couldn't be read: never tap on that. */
-    const readScreen = async (label: string): Promise<ReelScreen | undefined> => {
-        const tree = await readTree();
-        if (!tree) return undefined;
-        await debugShot(label, tree);
-        return readReelScreen(tree);
     };
 
     type FullWatchOutcome = 'completed' | 'no-progress' | 'abandoned' | 'out-of-time';
@@ -285,12 +281,7 @@ try {
     };
 
     // A cold launch opens the home feed; Reels is a tab away.
-    const launchTree = await readTree();
-    const reelsTab = launchTree && findReelsTab(launchTree);
-    if (!reelsTab) {
-        await debugShot('no-reels-tab', launchTree);
-        throw new Error('Could not find the Instagram Reels tab (is Instagram logged in?); stopping');
-    }
+    const reelsTab = reelsTabPoint(window);
     await tapCoordinate(driver, reelsTab.x, reelsTab.y, 'Reels tab', { radius: 6 });
     await driver.pause(3000);
     // Confirm we really are on Reels before scrolling. The first screen can

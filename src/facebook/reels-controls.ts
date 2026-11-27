@@ -1,6 +1,6 @@
-import { fileURLToPath } from 'node:url';
-
 import sharp from 'sharp';
+
+import { bestMatch as bestMatchStep, edges, loadTemplate as loadSharedTemplate, toGray, type Gray, type Match, type Template } from '../agent/icon-match.js';
 
 export interface ReelsControls {
     /** J'aime button centre, in points. */
@@ -11,12 +11,6 @@ export interface ReelsControls {
     liked: boolean;
     /** Weakest of the matched icon scores (normalized correlation, -1..1). */
     confidence: number;
-}
-
-interface Gray {
-    data: Float64Array;
-    width: number;
-    height: number;
 }
 
 // Reference images were cropped from an iPhone XR screenshot (scale 2) as
@@ -44,97 +38,14 @@ function isFacebookBlue(r: number, g: number, b: number): boolean {
     return b > 190 && r < 120 && g > 60 && g < 160 && b - r > 100;
 }
 
-function toGray(data: Buffer, width: number, height: number, channels: number): Gray {
-    const values = new Float64Array(width * height);
-    for (let index = 0; index < values.length; index++) {
-        const offset = index * channels;
-        values[index] = channels < 3
-            ? data[offset]!
-            : 0.299 * data[offset]! + 0.587 * data[offset + 1]! + 0.114 * data[offset + 2]!;
-    }
-    return { data: values, width, height };
-}
-
-/** Edge strength: |dx| + |dy| with central differences. */
-function edges({ data, width, height }: Gray): Gray {
-    const out = new Float64Array(width * height);
-    for (let y = 1; y < height - 1; y++) {
-        for (let x = 1; x < width - 1; x++) {
-            const i = y * width + x;
-            out[i] = Math.abs(data[i + 1]! - data[i - 1]!) + Math.abs(data[i + width]! - data[i - width]!);
-        }
-    }
-    return { data: out, width, height };
-}
-
-interface Template { values: Float64Array; width: number; height: number }
-
 type TemplateName = 'like' | 'comment' | 'share' | 'show-original';
 
-const templateCache = new Map<string, Promise<Template>>();
-
 function loadTemplate(name: TemplateName, scale: number): Promise<Template> {
-    const key = `${name}@${scale}`;
-    let cached = templateCache.get(key);
-    if (!cached) {
-        cached = (async () => {
-            const file = fileURLToPath(new URL(`${name}.png`, TEMPLATE_DIR));
-            const meta = await sharp(file).metadata();
-            const width = Math.round(meta.width! * scale / TEMPLATE_SCALE);
-            const height = Math.round(meta.height! * scale / TEMPLATE_SCALE);
-            const { data, info } = await sharp(file).resize(width, height).greyscale().raw()
-                .toBuffer({ resolveWithObject: true });
-            const edge = edges(toGray(data, info.width, info.height, info.channels));
-            // Ignore the 1 px border, where edges() leaves zeros.
-            const values = edge.data;
-            const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-            for (let index = 0; index < values.length; index++) values[index] = values[index]! - mean;
-            return { values, width: info.width, height: info.height };
-        })();
-        templateCache.set(key, cached);
-    }
-    return cached;
+    return loadSharedTemplate(TEMPLATE_DIR, name, scale, TEMPLATE_SCALE);
 }
-
-function correlation(image: Gray, template: Template, cx: number, cy: number): number {
-    const { width, height, values } = template;
-    const left = cx - Math.floor(width / 2);
-    const top = cy - Math.floor(height / 2);
-    if (left < 0 || top < 0 || left + width > image.width || top + height > image.height) return -1;
-    let sum = 0;
-    for (let y = 0; y < height; y++) {
-        const row = (top + y) * image.width + left;
-        for (let x = 0; x < width; x++) sum += image.data[row + x]!;
-    }
-    const mean = sum / values.length;
-    let covariance = 0;
-    let patchEnergy = 0;
-    let templateEnergy = 0;
-    for (let y = 0; y < height; y++) {
-        const row = (top + y) * image.width + left;
-        for (let x = 0; x < width; x++) {
-            const p = image.data[row + x]! - mean;
-            const t = values[y * width + x]!;
-            covariance += p * t;
-            patchEnergy += p * p;
-            templateEnergy += t * t;
-        }
-    }
-    if (patchEnergy === 0 || templateEnergy === 0) return -1;
-    return covariance / Math.sqrt(patchEnergy * templateEnergy);
-}
-
-interface Match { x: number; y: number; score: number }
 
 function bestMatch(image: Gray, template: Template, x0: number, x1: number, y0: number, y1: number): Match {
-    let best: Match = { x: x0, y: y0, score: -1 };
-    for (let y = y0; y <= y1; y += STEP) {
-        for (let x = x0; x <= x1; x += STEP) {
-            const score = correlation(image, template, x, y);
-            if (score > best.score) best = { x, y, score };
-        }
-    }
-    return best;
+    return bestMatchStep(image, template, x0, x1, y0, y1, STEP);
 }
 
 /** Share of blue pixels in a square of ±radius px around (cx, cy). */
