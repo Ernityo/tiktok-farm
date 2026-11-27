@@ -10,3 +10,4 @@ static/assets/
 *.log
 .appium2/
 .agent-runs/
+logs/
