@@ -20,8 +20,13 @@ export interface AgentPlan {
     follow?: boolean;
 }
 
+/**
+ * All times are from the moment the video appeared on screen (the swipe
+ * landing), not from the decision: capture and the model's thinking time
+ * already count as watching, so a slow model doesn't stretch every video.
+ */
 export interface TimedPlan {
-    /** Extra time to keep the video on screen before swiping. */
+    /** How long the video stays on screen in total before swiping. */
     watchMs: number;
     /** Undefined = no like. Always <= watchMs. */
     likeAtMs?: number;
@@ -34,15 +39,17 @@ export interface TimedPlan {
 }
 
 /**
- * Extra watch time in ms per personality, on top of the agent's thinking time
- * (which already counts as watch time). Short/full follow the programmatic
- * profiles' watch and linger ranges so a session stays in its category.
- * `full` is used until TikTok's progress bar can be read.
+ * Target time on screen in ms per personality, counted from the swipe landing,
+ * so capture and the agent's thinking time are part of it. When the decision
+ * arrives after the target, the swipe follows right away. Skip is how long a
+ * person takes to see "not for me" and flick away. Short/full follow the
+ * programmatic profiles' watch and linger ranges so a session stays in its
+ * category. `full` is used until TikTok's progress bar can be read.
  */
 export const WATCH_RANGES: Record<Personality, Record<WatchChoice, [number, number]>> = {
-    skimmer: { skip: [150, 450], short: [1000, 3000], full: [4000, 9000] },
-    casual: { skip: [150, 450], short: [2000, 6000], full: [8000, 15000] },
-    engaged: { skip: [150, 450], short: [5000, 12000], full: [15000, 28000] },
+    skimmer: { skip: [800, 2500], short: [1000, 3000], full: [4000, 9000] },
+    casual: { skip: [800, 2500], short: [2000, 6000], full: [8000, 15000] },
+    engaged: { skip: [800, 2500], short: [5000, 12000], full: [15000, 28000] },
 };
 
 /**
@@ -87,7 +94,7 @@ export const ENGAGEMENT_DROP_CHANCE = 0.1;
 const TIMING_JITTER = 0.25;
 
 /** Minimum gap between a like and a save, and before the swipe. */
-const MIN_ACTION_GAP_MS = 700;
+export const MIN_ACTION_GAP_MS = 700;
 
 function between(min: number, max: number, random: () => number): number {
     return Math.round(min + random() * (max - min));

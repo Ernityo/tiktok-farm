@@ -159,7 +159,7 @@ server.registerTool('doomscroll_step', {
     inputSchema: {
         on_niche: z.number().min(0).max(1).describe('How sure you are the video is on-niche'),
         watch: z.enum(['skip', 'short', 'full']).describe('skip = swipe now; short = a few seconds; full = watch to the end'),
-        like_at_ms: z.number().int().min(0).max(30000).nullable().optional().describe('When to like, ms from now; null = no like'),
+        like_at_ms: z.number().int().min(0).max(30000).nullable().optional().describe('When to like, in ms from when the video appeared (your thinking time counts; a time already past likes right away); null = no like'),
         save: z.boolean().optional().describe('Bookmark the video (TikTok only; ignored on Facebook/Instagram)'),
         comment: z.string().max(300).nullable().optional().describe('Facebook/Instagram only, "full" videos only, and only while the video shows '
             + '"comments N/M allowed" with some left; omit or null otherwise (almost always). Written as the persona from doomscroll_start, the way '

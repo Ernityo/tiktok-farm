@@ -15,7 +15,7 @@ import { adFromWords, readCaptionWords } from '../tiktok/ad-detection.js';
 import { AppStuckError, commentAllowance, commentChance, commentOpen, commentWarmupMs } from './comment.js';
 import type { AgentApp, ScrollGoal } from './model.js';
 import {
-    autoSkipReason, engagementAllowance, finalLingerMs, FULL_WATCH_CAP_MS, sameCaption, sessionLengthMs, SHOP_POST, swipeRecord, timePlan,
+    autoSkipReason, engagementAllowance, finalLingerMs, FULL_WATCH_CAP_MS, MIN_ACTION_GAP_MS, sameCaption, sessionLengthMs, SHOP_POST, swipeRecord, timePlan,
     type AgentPlan, type SwipeRecord,
 } from './plan.js';
 import { PROFILES, type Personality } from '../tiktok/doomscroll-profile.js';
@@ -41,8 +41,13 @@ export function envInteger(name: string, fallback: number, min: number, max: num
     return value;
 }
 
-/** Wait after a swipe before the screenshot: the caption shows on the first frame. */
-const SETTLE_MS = envInteger('AGENT_SETTLE_MS', 400, 0, 5000);
+/**
+ * Wait after a swipe before the screenshot. 0: on Facebook the feed had
+ * already stopped in the first screenshot after the finger lifted (5 swipes
+ * measured), and a screenshot takes 250-500 ms anyway. Raise it with
+ * AGENT_SETTLE_MS if a screenshot ever catches the feed mid-scroll.
+ */
+const SETTLE_MS = envInteger('AGENT_SETTLE_MS', 0, 0, 5000);
 /** Width of the JPEG sent to the model; smaller = fewer tokens. */
 const IMAGE_WIDTH = envInteger('AGENT_IMAGE_WIDTH', 384, 160, 1200);
 const IMAGE_QUALITY = envInteger('AGENT_IMAGE_QUALITY', 60, 20, 95);
@@ -610,10 +615,15 @@ export class AgentSession {
             let liked = false;
             let saved = false;
             let commented: Awaited<ReturnType<AgentSession['leaveComment']>> | undefined;
+            // Timings count from the video appearing, so the thinking time is part of
+            // the watch. Actions already due run now, but never back to back.
+            const shownAt = video.arrivedAt;
+            let lastActionAt = -Infinity;
             for (const action of actions) {
-                await sleep(decidedAt + action.at - Date.now());
+                await sleep(Math.max(shownAt + action.at, lastActionAt + MIN_ACTION_GAP_MS) - Date.now());
                 if (action.kind === 'comment') {
                     commented = await this.leaveComment(timed.comment!);
+                    lastActionAt = Date.now();
                     continue;
                 }
                 // Located right before the tap: the rail moves, and Reels can move on by themselves.
@@ -637,14 +647,15 @@ export class AgentSession {
                     saved = true;
                     this.saves += 1;
                 }
+                lastActionAt = Date.now();
             }
             // After a comment the video has been on screen a long while already, and
             // it may have stopped behind the sheet: a short look, then move on.
             const watched: WatchOutcome = commented
                 ? (await sleep(1500 + Math.random() * 3500), { by: 'commented' })
                 : plan.watch === 'full'
-                    ? await this.watchToEnd(decidedAt, timed.watchMs, video.reelId)
-                    : (await sleep(decidedAt + timed.watchMs - Date.now()), { by: 'timer' });
+                    ? await this.watchToEnd(shownAt, timed.watchMs, video.reelId)
+                    : (await sleep(Math.max(shownAt + timed.watchMs, lastActionAt + MIN_ACTION_GAP_MS) - Date.now()), { by: 'timer' });
 
             const isAd = await video.strictAd;
             if (isAd) this.ads += 1;
@@ -793,10 +804,11 @@ export class AgentSession {
     /**
      * Keeps a `full` video on screen until it has played to the end (the
      * progress bar loops back to the start), the app moves on, or the cap.
-     * Videos without a bar fall back to the timed watch.
+     * Videos without a bar fall back to the timed watch. The cap and that timer
+     * count from `shownAt`, when the video appeared.
      */
-    private async watchToEnd(decidedAt: number, timedWatchMs: number, reelId: string | undefined): Promise<WatchOutcome> {
-        const capEnd = decidedAt + FULL_WATCH_CAP_MS[this.personality];
+    private async watchToEnd(shownAt: number, timedWatchMs: number, reelId: string | undefined): Promise<WatchOutcome> {
+        const capEnd = shownAt + FULL_WATCH_CAP_MS[this.personality];
         const tracker = new ReelWatchTracker();
         let lastProgress: number | undefined;
         let misses = 0;
@@ -823,7 +835,7 @@ export class AgentSession {
             await sleep(Math.min(900, capEnd - Date.now()));
         }
         if (lastProgress === undefined) {
-            await sleep(decidedAt + timedWatchMs - Date.now());
+            await sleep(shownAt + timedWatchMs - Date.now());
             return { by: 'timer' };
         }
         return { by: 'progress', completed: false, lastProgress };
