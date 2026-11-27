@@ -45,6 +45,7 @@
     "agent:warmup": "node --env-file-if-exists=.env --env-file-if-exists=.env.devices --import tsx src/agent/warmup.ts",
     "agent:bench": "node --env-file-if-exists=.env --env-file-if-exists=.env.devices --import tsx src/agent/bench.ts",
     "agent:report": "node --import tsx src/agent/report.ts",
+    "agent:frame-check": "node --env-file-if-exists=.env --env-file-if-exists=.env.devices --import tsx src/agent/frame-check.ts",
     "agent:mcp": "node --env-file-if-exists=.env --env-file-if-exists=.env.devices --import tsx src/agent/mcp.ts",
     "detect:check": "node --env-file-if-exists=.env --env-file-if-exists=.env.devices --import tsx src/tiktok/detect-controls-check.ts"
   },

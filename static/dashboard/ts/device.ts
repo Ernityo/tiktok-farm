@@ -188,7 +188,9 @@ const elements = {
 };
 
 let screenSize: ScreenSize | undefined;
-let paused = false;
+// The live view is off until clicked: while it streams, the phone captures
+// frames non-stop, which competes with a running doomscroll's screenshots.
+let paused = true;
 let connecting = false;
 let pointerStart: Point | undefined;
 let orderedMedia: File[] = [];
@@ -328,6 +330,7 @@ function startStream(): void {
 }
 
 async function connectRemote(): Promise<void> {
+    if (paused && screenSize) setStatus('Phone connected. Live view is off; click Start stream to watch.', 'ready');
     if (paused || connecting || !screenSize) return;
     connecting = true;
     try {
@@ -613,11 +616,11 @@ elements.refresh.addEventListener('click', async () => {
 });
 elements.toggle.addEventListener('click', () => {
     paused = !paused;
-    elements.toggle.textContent = paused ? 'Resume stream' : 'Pause stream';
+    elements.toggle.textContent = paused ? 'Start stream' : 'Stop stream';
     if (paused) {
         elements.screen.removeAttribute('src');
         elements.touchOverlay.replaceChildren();
-        setStatus('Video stream paused');
+        setStatus('Live view is off');
     } else {
         void connectRemote();
     }

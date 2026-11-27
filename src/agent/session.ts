@@ -53,6 +53,19 @@ const SETTLE_MS = envInteger('AGENT_SETTLE_MS', 0, 0, 5000);
 /** Width of the JPEG sent to the model; smaller = fewer tokens. */
 const IMAGE_WIDTH = envInteger('AGENT_IMAGE_WIDTH', 384, 160, 1200);
 const IMAGE_QUALITY = envInteger('AGENT_IMAGE_QUALITY', 60, 20, 95);
+/**
+ * Where screenshots come from. 'mjpeg' (default): one frame off WDA's MJPEG
+ * server, opened per screenshot and closed right after (full-res JPEG, no
+ * re-encode; ~40 ms vs ~390 ms on Facebook); falls back to /screenshot if the
+ * stream fails. 'screenshot': WDA /screenshot (a full-res PNG re-encoded on
+ * the phone, then base64).
+ */
+const FRAME_SOURCE = process.env.AGENT_FRAME_SOURCE === 'screenshot' ? 'screenshot' : 'mjpeg';
+/** JPEG quality of MJPEG frames; the OCR and pixel checks read them at full resolution. */
+const FRAME_QUALITY = envInteger('AGENT_FRAME_QUALITY', 80, 30, 100);
+/** WDA only captures while a client is connected; a high rate just shortens the wait for the next tick. */
+const FRAME_RATE = 30;
+const FRAME_TIMEOUT_MS = 2000;
 const CAPTION_MAX_CHARS = 400;
 const CAPTION_CROP_WIDTH = 640;
 /** Extra swipes when the feed did not move on (same video as before). */
@@ -345,6 +358,22 @@ export function resolveDevice(devices: readonly RegisteredDevice[], udid: string
     throw new Error(`Pass udid: ${active.length} active devices are registered: ${list}`);
 }
 
+/** Screenshots off the MJPEG stream, falling back to /screenshot (and saying so once) when it fails. */
+function streamScreenshot(remoteControl: WdaRemoteControl, udid: string): () => Promise<Buffer> {
+    let warned = false;
+    return async () => {
+        try {
+            return await remoteControl.getStreamFrame(udid, FRAME_TIMEOUT_MS);
+        } catch (error) {
+            if (!warned) {
+                warned = true;
+                console.warn(`[agent] MJPEG frame failed, using /screenshot: ${error instanceof Error ? error.message : String(error)}`);
+            }
+            return remoteControl.getScreenshot(udid);
+        }
+    };
+}
+
 /**
  * Unlocks the phone and opens an Appium session on the app. `launch`
  * relaunches it from cold (a doomscroll); otherwise it attaches to the app
@@ -356,6 +385,7 @@ export async function connectApp(device: RegisteredDevice, bundleId: string, { l
     const remoteControl = new WdaRemoteControl({
         deviceUdid: device.udid,
         wdaUrl,
+        mjpegUrl: process.env.MJPEG_URL ?? `http://127.0.0.1:${device.mjpegLocalPort ?? Number(process.env.MJPEG_LOCAL_PORT ?? 9100)}`,
         passcode: device.passcode ?? process.env.IOS_PASSCODE,
         passcodeKeypadLayout: coordinates.passcodeKeypad,
     });
@@ -385,7 +415,13 @@ export async function connectApp(device: RegisteredDevice, bundleId: string, { l
         } as WebdriverIO.Capabilities,
     });
     try {
-        await driver.updateSettings({ defaultActiveApplication: bundleId });
+        await driver.updateSettings({
+            defaultActiveApplication: bundleId,
+            // Full resolution, as /screenshot: the caption crop, OCR and pixel checks use the same coordinates.
+            ...(FRAME_SOURCE === 'mjpeg'
+                ? { mjpegScalingFactor: 100, mjpegServerScreenshotQuality: FRAME_QUALITY, mjpegServerFramerate: FRAME_RATE }
+                : {}),
+        });
         if (launch) await driver.pause(appLaunchSettleMs()); // let a launch ad settle
         // From WDA, not driver.getWindowRect(): that looks up the app element,
         // which hangs on TikTok's constantly updating feed.
@@ -393,7 +429,7 @@ export async function connectApp(device: RegisteredDevice, bundleId: string, { l
         return {
             driver, remoteControl, device, coordinates, scale,
             window: { width: screenSize.width, height: screenSize.height },
-            screenshot: () => remoteControl.getScreenshot(device.udid),
+            screenshot: FRAME_SOURCE === 'mjpeg' ? streamScreenshot(remoteControl, device.udid) : () => remoteControl.getScreenshot(device.udid),
         };
     } catch (error) {
         await driver.deleteSession().catch(() => undefined);
@@ -498,6 +534,7 @@ export class AgentSession {
             const lengthMs = sessionLengthMs(options.minutes);
             await writeFile(path.join(logDirectory, 'session.json'), JSON.stringify({
                 app: adapter.app, udid: device.udid, account, niche, personality: options.personality, minutes: options.minutes,
+                frames: FRAME_SOURCE === 'mjpeg' ? { source: FRAME_SOURCE, quality: FRAME_QUALITY } : { source: FRAME_SOURCE },
                 goal: options.goal ?? 'niche',
                 ...(options.follows ? { follows: options.follows } : {}),
                 ...(options.search ? { search: options.search } : {}),
@@ -561,19 +598,22 @@ export class AgentSession {
         const settledAt = Date.now();
         const screenshot = await this.context.screenshot();
         const shotAt = Date.now();
-        let ocrAt = shotAt;
-        let inspectAt = shotAt;
-        const words = readCaptionWords(screenshot).catch((): OcrWord[] => []).finally(() => { ocrAt = Date.now(); });
-        const inspection = (this.adapter.inspect?.(this.context, screenshot) ?? Promise.resolve<VideoInspection>({ isAd: false }))
-            .finally(() => { inspectAt = Date.now(); });
-        // Still rejects into the Promise.all below; this only stops an early failure counting as unhandled.
-        inspection.catch(() => undefined);
+        // The model's images first, and the model call with them: the OCR and
+        // the adapter's checks run long synchronous pixel loops that would
+        // hold these back (the resize itself takes ~20 ms).
         const [image, captionImage] = await Promise.all([
             sharp(screenshot).resize({ width: IMAGE_WIDTH }).jpeg({ quality: IMAGE_QUALITY }).toBuffer(),
             this.captionCrop(screenshot),
         ]);
         const imagesAt = Date.now();
         this.frameListener?.({ video: this.videos + 1, image, captionImage, engagement: this.engagementFor(this.decisionMs.length + 1) });
+        let ocrAt = imagesAt;
+        let inspectAt = imagesAt;
+        const words = readCaptionWords(screenshot).catch((): OcrWord[] => []).finally(() => { ocrAt = Date.now(); });
+        const inspection = (this.adapter.inspect?.(this.context, screenshot) ?? Promise.resolve<VideoInspection>({ isAd: false }))
+            .finally(() => { inspectAt = Date.now(); });
+        // Still rejects into the Promise.all below; this only stops an early failure counting as unhandled.
+        inspection.catch(() => undefined);
         const [captionWords, inspected] = await Promise.all([words, inspection]);
         const caption = captionWords.map((word) => word.text).join(' ').slice(0, CAPTION_MAX_CHARS);
         const marks: CaptureMarks = { startedAt, settledAt, shotAt, imagesAt, ocrAt, inspectAt };
@@ -778,8 +818,8 @@ export class AgentSession {
                 ...(SETTLE_MS > 0 ? { settle: span([marks.startedAt, marks.settledAt]) } : {}),
                 screenshot: span([marks.settledAt, marks.shotAt]),
                 images: span([marks.shotAt, marks.imagesAt]),
-                ocr: span([marks.shotAt, marks.ocrAt]),
-                inspect: span([marks.shotAt, marks.inspectAt]),
+                ocr: span([marks.imagesAt, marks.ocrAt]),
+                inspect: span([marks.imagesAt, marks.inspectAt]),
                 observed: rel(video.observedAt),
                 ...(trace.model ? { model: span([trace.model.start, trace.model.end]) } : {}),
                 decided: rel(decidedAt),

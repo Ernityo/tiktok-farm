@@ -109,6 +109,32 @@ export class RemoteDeviceError extends Error {}
 /** Keyboard layers read so far, per phone and keyboard position, for the life of the process. */
 const keyboardLayers = new Map<string, KeyboardLayerCache>();
 
+const HEADER_END = Buffer.from('\r\n\r\n');
+
+/**
+ * The first part of WDA's multipart MJPEG body:
+ * `--BoundaryString\r\nContent-type: image/jpeg\r\nContent-Length: N\r\n\r\n<N bytes>`.
+ */
+async function readFirstJpeg(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<Buffer> {
+    let buffered = Buffer.alloc(0);
+    let start = -1;
+    let length = -1;
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) throw new RemoteDeviceError('WDA video stream ended before a full frame');
+        buffered = Buffer.concat([buffered, value]);
+        if (start < 0) {
+            const end = buffered.indexOf(HEADER_END);
+            if (end < 0) continue;
+            const match = /content-length:\s*(\d+)/i.exec(buffered.subarray(0, end).toString('latin1'));
+            if (!match) throw new RemoteDeviceError('WDA video frame has no Content-Length');
+            start = end + HEADER_END.length;
+            length = Number(match[1]);
+        }
+        if (buffered.length >= start + length) return Buffer.from(buffered.subarray(start, start + length));
+    }
+}
+
 export class WdaRemoteControl {
     readonly wdaUrl: string;
     readonly mjpegUrl: string;
@@ -189,6 +215,37 @@ export class WdaRemoteControl {
             throw new RemoteDeviceError('WebDriverAgent returned an invalid screenshot');
         }
         return Buffer.from(payload.value, 'base64');
+    }
+
+    /**
+     * One JPEG off WDA's MJPEG server: connect, read the first frame, disconnect.
+     * WDA only captures while a client is connected, so the frame was taken
+     * after this call started (unless another viewer, e.g. the dashboard's live
+     * view, was already connected: then it can be up to one frame older). It skips
+     * the PNG re-encode and base64 of /screenshot.
+     */
+    async getStreamFrame(udid: string, timeoutMs = this.timeoutMs): Promise<Buffer> {
+        this.assertTarget(udid);
+        const abort = new AbortController();
+        const timer = setTimeout(() => abort.abort(new RemoteDeviceError(`No MJPEG frame within ${timeoutMs} ms`)), timeoutMs);
+        try {
+            let response: Response;
+            try {
+                response = await this.fetch(`${this.mjpegUrl}/`, { signal: abort.signal });
+            } catch (error) {
+                throw new RemoteDeviceError(`WDA video stream is unavailable: ${errorMessage(error)}`);
+            }
+            if (!response.ok || !response.body) throw new RemoteDeviceError(`WDA video stream returned ${response.status}`);
+            const reader = response.body.getReader();
+            try {
+                return await readFirstJpeg(reader);
+            } catch (error) {
+                throw error instanceof RemoteDeviceError ? error : new RemoteDeviceError(`WDA video stream broke: ${errorMessage(error)}`);
+            }
+        } finally {
+            clearTimeout(timer);
+            abort.abort();
+        }
     }
 
     async getMjpegStream(udid: string, signal?: AbortSignal): Promise<Response> {
@@ -298,6 +355,26 @@ export class WdaRemoteControl {
             if (!status.sessionId) await this.request(`/session/${sessionId}`, { method: 'DELETE' }).catch(() => {});
         }
         throw new RemoteDeviceError('Device did not lock after pressing the side button');
+    }
+
+    /**
+     * Sets WDA settings (e.g. the MJPEG quality) without Appium, through the
+     * running session or a short-lived one. The MJPEG ones are process-wide
+     * in WDA, so they outlive that session.
+     */
+    async updateSettings(udid: string, settings: Record<string, unknown>): Promise<void> {
+        this.assertTarget(udid);
+        const status = await (await this.request('/status')).json() as { sessionId?: string | null };
+        const sessionId = status.sessionId ?? await this.createSession();
+        try {
+            await this.request(`/session/${sessionId}/appium/settings`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ settings }),
+            });
+        } finally {
+            if (!status.sessionId) await this.request(`/session/${sessionId}`, { method: 'DELETE' }).catch(() => {});
+        }
     }
 
     private async createSession(): Promise<string> {
