@@ -117,6 +117,27 @@ for (const [label, spec, shots] of [
     });
 }
 
+// The placeholders read on the phone on 2026-11-27 (OCR words, screenshot px at 2x):
+// Instagram names the Reel's account, Facebook the profile commenting.
+const ocrWord = (text: string, x: number, y: number) => ({ text, x, y, width: text.length * 14, height: 26, confidence: 90 });
+const line = (text: string, y: number) => text.split(' ').map((part, i, all) => ocrWord(part, 60 + all.slice(0, i).join(' ').length * 14, y));
+
+for (const [label, spec, text] of [
+    ['Instagram', INSTAGRAM_COMMENT_SHEET, 'Ajoutez un commentaire pour clem_c...'],
+    ['Instagram', INSTAGRAM_COMMENT_SHEET, 'Rejoignez la conversation...'],
+    ['Facebook', FACEBOOK_COMMENT_SHEET, 'Commenter en tant que Valentine Bourgeois'],
+    ['Facebook', FACEBOOK_COMMENT_SHEET, 'Commentez...'],
+] as const) {
+    test(`the empty ${label} text box reading "${text}" is found`, () => {
+        const box = findPlaceholder([...line('Répondre', 1364), ...line(text, 1660)], spec.placeholder, 2);
+        assert.ok(box && Math.abs(box.y - 830) <= 1, JSON.stringify(box));
+    });
+}
+
+test('a posted comment that says "commenter" is not the Facebook text box', () => {
+    assert.equal(findPlaceholder(line('je vais commenter ça demain', 1500), FACEBOOK_COMMENT_SHEET.placeholder, 2), undefined);
+});
+
 const sendIn = async (path: string) => {
     const { data, info } = await sharp(await fixture(path)).removeAlpha().raw().toBuffer({ resolveWithObject: true });
     const point = findSendButton(data, info.width, info.height, info.channels, 2);

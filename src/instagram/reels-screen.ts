@@ -32,7 +32,10 @@ export interface ReelScreen {
     /** The Reels tab is the selected tab. */
     onReels: boolean;
     kind: ReelScreenKind;
-    /** J'aime in the right-hand column, centre in points. Absent on 'other'. */
+    /**
+     * J'aime in the right-hand column, centre in points. Absent on 'other',
+     * and on a Reel whose heart didn't match (a line in the video across it).
+     */
     like?: { x: number; y: number; liked: boolean };
     /** The comment bubble under it, centre in points. Absent on 'other'. */
     comment?: Point;
@@ -47,6 +50,12 @@ export interface Point { x: number; y: number }
 const TEMPLATE_DIR = new URL('./templates/', import.meta.url);
 /** Heart and comment bubble must match at least this well (edge correlation, -1..1). */
 export const MIN_RAIL_SCORE = 0.45;
+/**
+ * The bubble alone, heart unmatched, still makes a rail at this score: the
+ * heart can be crossed by something in the video (frame 14, 2026-11-27).
+ * Non-Reel screens (home feed, comment sheets, browser) stay at 0.33 or less.
+ */
+export const MIN_BUBBLE_ALONE_SCORE = 0.55;
 /** Heart → comment bubble: 47 pt on ads, 71 pt on Reels. */
 const COMMENT_GAP_PT = { min: 38, max: 82 } as const;
 /** Centre of the tab bar's icons, from the bottom of the screen (iPhones with a home indicator). */
@@ -146,26 +155,29 @@ function redShare(pixels: Pixels, cx: number, cy: number, radius: number): numbe
 }
 
 /**
- * J'aime in the right-hand rail, in pixels. The comment bubble anchors the
- * rail; J'aime is the heart 38-82 pt above it: a white outline, or a filled
- * red heart once liked (the outline template doesn't match that one).
- * Undefined when the rail isn't confidently on screen (cards, sheets,
- * pop-ups): never tap a guess.
+ * The right-hand rail, in pixels. The comment bubble anchors it; J'aime is
+ * the heart 38-82 pt above: a white outline, or a filled red heart once liked
+ * (the outline template doesn't match that one). When the heart doesn't
+ * match but the bubble is sure (MIN_BUBBLE_ALONE_SCORE), the rail is there
+ * without a like button: such a Reel is watched but never liked. Undefined
+ * when the rail isn't confidently on screen (cards, sheets, pop-ups): never
+ * tap a guess.
  */
-export async function findLikeButton(pixels: Pixels, scale: number): Promise<{ x: number; y: number; liked: boolean; score: number; comment: Point } | undefined> {
+export async function findRail(pixels: Pixels, scale: number): Promise<{ like?: { x: number; y: number; liked: boolean }; score: number; comment: Point } | undefined> {
     const { width, height } = pixels;
     const image = edges(toGray(pixels.data, width, height, pixels.channels));
     const [heart, comment] = await Promise.all([loadTemplate(TEMPLATE_DIR, 'heart', scale), loadTemplate(TEMPLATE_DIR, 'comment', scale)]);
     const bubble = bestMatch(image, comment, Math.floor(width * 0.88), Math.ceil(width * 0.97), Math.floor(height * 0.45), Math.ceil(height * 0.88), 2, true);
     if (bubble.score < MIN_RAIL_SCORE) return undefined;
+    const bubblePoint = { x: bubble.x, y: bubble.y };
     const slack = Math.round(4 * scale);
     const top = Math.round(bubble.y - COMMENT_GAP_PT.max * scale);
     const bottom = Math.round(bubble.y - COMMENT_GAP_PT.min * scale);
     const outline = bestMatch(image, heart, bubble.x - slack, bubble.x + slack, top, bottom, 2, true);
     if (outline.score >= MIN_RAIL_SCORE) {
         return {
-            x: outline.x, y: outline.y, liked: redShare(pixels, outline.x, outline.y, Math.round(6 * scale)) > 0.3,
-            score: Math.min(outline.score, bubble.score), comment: { x: bubble.x, y: bubble.y },
+            like: { x: outline.x, y: outline.y, liked: redShare(pixels, outline.x, outline.y, Math.round(6 * scale)) > 0.3 },
+            score: Math.min(outline.score, bubble.score), comment: bubblePoint,
         };
     }
     // Liked: a run of mostly red rows in the column, about the heart's height (~22 pt).
@@ -177,28 +189,43 @@ export async function findLikeButton(pixels: Pixels, scale: number): Promise<{ x
         }
     }
     const runPt = (last - first + 1) / scale;
-    if (first < 0 || runPt < 10 || runPt > 30) return undefined;
-    return { x: bubble.x, y: Math.round((first + last) / 2), liked: true, score: bubble.score, comment: { x: bubble.x, y: bubble.y } };
+    if (first >= 0 && runPt >= 10 && runPt <= 30) {
+        return { like: { x: bubble.x, y: Math.round((first + last) / 2), liked: true }, score: bubble.score, comment: bubblePoint };
+    }
+    return bubble.score >= MIN_BUBBLE_ALONE_SCORE ? { score: bubble.score, comment: bubblePoint } : undefined;
 }
 
 /**
  * "Sponsorisée" and the account name from the caption band's OCR words
- * (screenshot pixels). The name is the first word right of the avatar, up to
- * "Suivre" (an ad's name can be two words: "Evelyn Foster").
+ * (screenshot pixels). The name is on the avatar's row, right of it, up to
+ * "Suivre" (an ad's name can be two words: "Evelyn Foster"). The caption line
+ * under it starts at the screen's left edge, under the avatar: a line with a
+ * word that far left is never the name, so a missed name gives no account
+ * rather than caption words.
  */
 export function captionFromWords(words: readonly OcrWord[], width: number): { sponsored: boolean; account?: string } {
     const sponsored = words.some((word) => SPONSORED.test(word.text.trim().replace(/[^\p{L}]/gu, '')));
-    const first = words
+    const real = (word: OcrWord) => /[\p{L}\p{N}]{2,}/u.test(word.text);
+    const lines: OcrWord[][] = [];
+    for (const word of [...words].sort((a, b) => a.y - b.y)) {
+        const middle = word.y + word.height / 2;
+        const line = lines.find((candidate) => Math.abs(candidate[0]!.y + candidate[0]!.height / 2 - middle) < Math.max(candidate[0]!.height, word.height) * 0.6);
+        if (line) line.push(word);
+        else lines.push([word]);
+    }
+    const nameStart = (line: OcrWord[]) => line
         .filter((word) => word.x >= width * NAME_LEFT_SHARE.min && word.x <= width * NAME_LEFT_SHARE.max && /[\p{L}\p{N}]{3,}/u.test(word.text))
-        .sort((a, b) => a.y - b.y)[0];
-    if (!first) return { sponsored };
-    const line = words
-        .filter((word) => Math.abs(word.y + word.height / 2 - (first.y + first.height / 2)) < first.height * 0.6 && word.x >= first.x)
-        .sort((a, b) => a.x - b.x);
+        .sort((a, b) => a.x - b.x)[0];
+    const isFollow = (word: OcrWord) => /^suivre$|^follow$/i.test(word.text.trim());
+    const startsAtEdge = (line: OcrWord[]) => line.some((word) => real(word) && word.x < width * NAME_LEFT_SHARE.min);
+    const nameLine = lines.find((line) => line.some(isFollow) && nameStart(line))
+        ?? lines.find((line) => nameStart(line) && !startsAtEdge(line));
+    if (!nameLine) return { sponsored };
+    const first = nameStart(nameLine)!;
     const name: string[] = [];
-    for (const word of line) {
+    for (const word of nameLine.filter((w) => w.x >= first.x).sort((a, b) => a.x - b.x)) {
         const text = word.text.trim();
-        if (/^suivre$|^follow$/i.test(text) || !/[\p{L}\p{N}]{2,}/u.test(text) || name.length === 3) break;
+        if (isFollow(word) || !/[\p{L}\p{N}]{2,}/u.test(text) || name.length === 3) break;
         name.push(text);
     }
     return { sponsored, ...(name.length ? { account: name.join(' ') } : {}) };
@@ -229,20 +256,28 @@ export async function decodePixels(screenshot: Buffer): Promise<Pixels> {
     return { data, width: info.width, height: info.height, channels: info.channels };
 }
 
+/**
+ * "Sponsorisée" makes an ad even when the rail isn't found (white icons on a
+ * light video), as long as the Reels tab is selected: a sponsored post on the
+ * home feed stays 'other'. Without the rail anything else is 'other'.
+ */
+export function reelKind(onReels: boolean, rail: boolean, sponsored: boolean): ReelScreenKind {
+    if (sponsored && (rail || onReels)) return 'ad';
+    return rail ? 'reel' : 'other';
+}
+
 /** Classifies the Reels screen on a screenshot (points in the result). */
 export async function readReelScreenshot(screenshot: Buffer, scale: number): Promise<ReelScreen> {
     const pixels = await decodePixels(screenshot);
     const onReels = reelsTabSelected(pixels, scale);
-    const [like, caption] = await Promise.all([findLikeButton(pixels, scale), readCaption(pixels)]);
+    const [rail, caption] = await Promise.all([findRail(pixels, scale), readCaption(pixels)]);
     const progress = onReels ? readProgressBar(pixels) : undefined;
-    const kind: ReelScreenKind = !like ? 'other' : caption.sponsored ? 'ad' : 'reel';
+    const kind = reelKind(onReels, Boolean(rail), caption.sponsored);
     return {
         onReels,
         kind,
-        ...(like ? {
-            like: { x: Math.round(like.x / scale), y: Math.round(like.y / scale), liked: like.liked },
-            comment: { x: Math.round(like.comment.x / scale), y: Math.round(like.comment.y / scale) },
-        } : {}),
+        ...(rail?.like ? { like: { x: Math.round(rail.like.x / scale), y: Math.round(rail.like.y / scale), liked: rail.like.liked } } : {}),
+        ...(rail ? { comment: { x: Math.round(rail.comment.x / scale), y: Math.round(rail.comment.y / scale) } } : {}),
         ...(progress !== undefined ? { progress } : {}),
         // A sheet or pop-up over the Reel has its own names in that band.
         ...(onReels && caption.account ? { reelId: `Reel de ${caption.account}` } : {}),

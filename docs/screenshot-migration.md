@@ -20,7 +20,12 @@ except where noted.
 4. **Instagram Reels** — `src/instagram/reels-screen.ts`. Rail by template
    matching (`src/agent/icon-match.ts`, shared with Facebook): comment bubble,
    then the heart 38-82 pt above it, or a filled red heart once liked.
-   "Sponsorisée" and the account name (reel id) by OCR of the caption band,
+   When the heart doesn't match but the bubble is sure (0.55), it is still a
+   Reel, with no like button (watched, never liked). "Sponsorisée" makes an
+   ad even without the rail. The account name (reel id) is read off the
+   avatar's row (the one with "Suivre", else one not starting at the left
+   edge, which is the caption line); a missed name gives no id. Both by OCR
+   of the caption band,
    progress from the bar above the tab bar, Reels tab from the tab icons.
 5. **Comment flow** — `src/agent/comment-flow.ts`. Empty text box by its
    placeholder (OCR), send button by its blue, comment confirmed when the
@@ -37,9 +42,9 @@ except where noted.
 
 ## Still to check on the phone
 
-- **Instagram liked heart**: the fixture is a real Reel with its heart filled
-  red by hand (no liked Reel on the test account). The agent's like
-  confirmation will show whether a real liked heart reads as liked.
+- **Instagram liked heart**: checked on the phone 2026-11-27 — a real
+  liked Reel (clem_catho) reads `liked: true`. The test fixture is still the
+  hand-filled one.
 - **Comment end to end** on Instagram and Facebook: the sheet, keyboard and
   send-button screenshots are real, but no comment was sent with the new code.
 - **Keyboards**: only the comment boxes' French AZERTY keyboards on the XR
